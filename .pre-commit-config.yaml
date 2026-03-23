@@ -3,6 +3,7 @@ repos:
     rev: v1.54.2
     hooks:
       - id: golangci-lint
+        language: system
 
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.0.0
