@@ -17,4 +17,4 @@ docker-compose up -d
 
 ## Status
 
-Milestone 0 - Initial setup (Git repository created)
+Milestone 0 - Completed (Repo setup, linting, logging, Docker, pre-commit hooks)
