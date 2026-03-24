@@ -18,11 +18,8 @@ jobs:
           go-version: 1.22
 
       - name: Build Gateway Service
-        run: |
-          cd gateway
-          go build -o gateway-service
-
+        working-directory: ./gateway-service
+        run: go build -o gateway-service ./cmd/...
       - name: Build User Service
-        run: |
-          cd user-service
-          go build -o user-service
+        working-directory: ./user-service
+        run: go build -o user-service ./cmd/...

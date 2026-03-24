@@ -22,8 +22,18 @@ jobs:
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.54.2
 
-      - name: Run lint
+      - name: Run lint (gateway-service)
+        working-directory: ./gateway-service
         run: golangci-lint run ./...
 
-      - name: Run tests
+      - name: Run lint (user-service)
+        working-directory: ./user-service
+        run: golangci-lint run ./...
+
+      - name: Run tests (gateway-service)
+        working-directory: ./gateway-service
+        run: go test ./...
+
+      - name: Run tests (user-service)
+        working-directory: ./user-service
         run: go test ./...
