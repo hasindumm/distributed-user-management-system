@@ -1,0 +1,28 @@
+name: CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.22
+
+      - name: Build Gateway Service
+        run: |
+          cd gateway
+          go build -o gateway-service
+
+      - name: Build User Service
+        run: |
+          cd user-service
+          go build -o user-service
