@@ -15,11 +15,12 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.22.5
+          go-version: 1.25.0
 
       - name: Build Gateway Service
         working-directory: ./gateway-service
         run: go build -o gateway-service ./cmd/...
+
       - name: Build User Service
         working-directory: ./user-service
         run: go build -o user-service ./cmd/...

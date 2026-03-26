@@ -1,0 +1,11 @@
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Binaries
+gateway-service/gateway-service
+user-service/user-service
