@@ -73,7 +73,9 @@ func TestMain(m *testing.M) {
 	if err := pgContainer.Terminate(ctx); err != nil {
 		log.Println("failed to terminate container:", err)
 	}
-	testDB.Close()
+	if err := testDB.Close(); err != nil {
+		log.Println("failed to close DB:", err)
+	}
 
 	os.Exit(code)
 

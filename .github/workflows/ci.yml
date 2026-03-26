@@ -16,15 +16,15 @@ jobs:
           go-version: 1.25.0
 
       - name: Run lint (gateway-service)
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.8
+          version: v2.4.0
           working-directory: ./gateway-service
 
       - name: Run lint (user-service)
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.8
+          version: v2.4.0
           working-directory: ./user-service
 
       - name: Run tests (gateway-service)
