@@ -1,9 +1,17 @@
 repos:
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v1.54.2
+  - repo: local
     hooks:
-      - id: golangci-lint
+      - id: golangci-lint-user-service
+        name: golangci-lint (user-service)
+        entry: bash -c 'export PATH=$PATH:/usr/local/go/bin:$(/usr/local/go/bin/go env GOPATH)/bin && cd user-service && golangci-lint run ./...'
         language: system
+        pass_filenames: false
+
+      - id: golangci-lint-gateway-service
+        name: golangci-lint (gateway-service)
+        entry: bash -c 'export PATH=$PATH:/usr/local/go/bin:$(/usr/local/go/bin/go env GOPATH)/bin && cd gateway-service && golangci-lint run ./...'
+        language: system
+        pass_filenames: false
 
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.0.0
