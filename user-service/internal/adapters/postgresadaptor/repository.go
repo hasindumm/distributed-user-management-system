@@ -6,7 +6,6 @@ import (
 	"errors"
 	"user-service/internal/adapters/postgresadaptor/db"
 	"user-service/internal/domain"
-	"user-service/internal/ports"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -16,7 +15,7 @@ type PostgresUserRepository struct {
 	queries *db.Queries
 }
 
-func NewPostgresRepository(database *sql.DB) ports.UserRepository {
+func NewPostgresRepository(database *sql.DB) *PostgresUserRepository {
 	return &PostgresUserRepository{
 		queries: db.New(database),
 	}
