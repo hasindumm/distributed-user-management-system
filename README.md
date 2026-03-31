@@ -104,9 +104,14 @@ docker compose up -d
 ### Run services locally
 
 ```bash
-# User Service
+# User Service — reads config.yaml by default (override with env vars)
 cd user-service
-DATABASE_URL="postgres://user:password@localhost:5432/dbname?sslmode=disable" go run cmd/main.go
+go run cmd/main.go
+
+# Override config via environment variables
+DATABASE_URL="postgres://user:pass@localhost:5432/userdb?sslmode=disable" \
+NATS_URL="nats://localhost:4222" \
+go run cmd/main.go
 
 # Gateway Service
 cd gateway-service
@@ -157,6 +162,113 @@ test:     adding or updating tests
 refactor: code restructure without behavior change
 ```
 
+## Internal NATS Communication
+
+All inter-service communication happens over NATS. There are two distinct patterns:
+
+### 1. RPC (Request / Reply)
+
+Used when the caller needs a response — Gateway asks User Service to perform an operation and waits for the result.
+
+| Subject | Operation | Description |
+|---|---|---|
+| `users.v1.create` | Create | Create a new user |
+| `users.v1.get.by_id` | Read | Fetch a user by UUID |
+| `users.v1.get.by_email` | Read | Fetch a user by email address |
+| `users.v1.list` | Read | List users with optional status filter and pagination |
+| `users.v1.update` | Update | Replace all mutable fields of a user |
+| `users.v1.delete` | Delete | Soft-delete a user by UUID |
+
+**Request/Response envelope:**
+
+Every RPC response has the same shape — either a result or an error, never both:
+
+```json
+{ "user": { ...UserDTO... }, "error": null }
+{ "user": null, "error": { "code": "NOT_FOUND", "message": "user not found" } }
+```
+
+**Error codes:**
+
+| Code | Meaning |
+|---|---|
+| `NOT_FOUND` | No user matched the given ID or email |
+| `ALREADY_EXISTS` | Email is already taken |
+| `VALIDATION_ERROR` | Request payload failed validation |
+| `INTERNAL_ERROR` | Unexpected server-side failure |
+
+**Timeout:** callers apply a 5-second timeout by default (configurable via `userclient.Config.Timeout`).
+
+---
+
+### 2. Events (Publish / Subscribe)
+
+Published by User Service after every successful mutation. Fire-and-forget — the RPC reply is sent first, then the event is published. No acknowledgement is expected.
+
+| Subject | Trigger | Payload |
+|---|---|---|
+| `users.v1.events.created` | User successfully created | Full `UserDTO` |
+| `users.v1.events.updated` | User successfully updated | Full `UserDTO` |
+| `users.v1.events.deleted` | User successfully deleted | `{ "user_id": "<uuid>" }` |
+
+**Created / Updated payload:**
+```json
+{
+  "user": {
+    "user_id": "a7f5b6e2-...",
+    "first_name": "Jane",
+    "last_name": "Doe",
+    "email": "jane@example.com",
+    "phone": "+1234567890",
+    "age": 30,
+    "status": "ACTIVE",
+    "created_at": "2026-03-31T10:00:00Z",
+    "updated_at": "2026-03-31T10:00:00Z"
+  }
+}
+```
+
+**Deleted payload:**
+```json
+{ "user_id": "a7f5b6e2-..." }
+```
+
+Only the ID is included on deletion because the user record no longer exists.
+
+---
+
+### Client Library (`user-service/pkg/userclient`)
+
+The client library abstracts all NATS details. Consumers never interact with NATS subjects, JSON encoding, or subscription management directly.
+
+**CRUD operations:**
+```go
+client, _ := userclient.New(userclient.Config{NATSURL: "nats://localhost:4222"}, logger)
+
+user, err := client.CreateUser(ctx, userclient.CreateUserRequest{...})
+user, err := client.GetUserByID(ctx, id)
+user, err := client.GetUserByEmail(ctx, email)
+users, err := client.ListUsers(ctx, userclient.ListUsersRequest{Limit: 50})
+user, err := client.UpdateUser(ctx, userclient.UpdateUserRequest{...})
+err        := client.DeleteUser(ctx, id)
+```
+
+**Event subscriptions:**
+```go
+sub, err := client.Subscribe(userclient.EventHandlers{
+    OnCreated: func(e userclient.UserCreatedEvent) { /* handle */ },
+    OnUpdated: func(e userclient.UserUpdatedEvent) { /* handle */ },
+    OnDeleted: func(e userclient.UserDeletedEvent) { /* handle */ },
+})
+
+// Stop receiving events
+sub.Unsubscribe()
+```
+
+All three handlers are optional — omit any field to skip that event type.
+
+---
+
 ## Domain Model
 
 | Field     | Type    | Description              |
@@ -171,14 +283,3 @@ refactor: code restructure without behavior change
 
 Status values: `ACTIVE`, `INACTIVE`, `SUSPENDED`
 
-## Milestones
-
-- ✅ Milestone 0 — Repo, Tooling, Hooks, CI Skeleton, Base Compose
-- ✅ Milestone 1 — Data Model & SQLC Foundation
-- ⬜ Milestone 2 — NATS RPC + Client Library Skeleton
-- ⬜ Milestone 3 — User Events + Client Subscribe/Unsubscribe
-- ⬜ Milestone 4 — Client Library Caching
-- ⬜ Milestone 5 — Gateway REST API + OpenAPI
-- ⬜ Milestone 6 — Gateway WebSocket API + AsyncAPI
-- ⬜ Milestone 7 — Containerization + Full System Compose
-- ⬜ Milestone 8 — Hardening & Release CI Complete

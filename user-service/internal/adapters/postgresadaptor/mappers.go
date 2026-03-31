@@ -22,7 +22,11 @@ func toNullString(s *string) sql.NullString {
 	}
 }
 
-func toNullInt32(i *int) sql.NullInt32 {
+type Integer interface {
+	int | int32 | int64 | int16 | int8
+}
+
+func toNullInt32[T Integer](i *T) sql.NullInt32 {
 	if i == nil {
 		return sql.NullInt32{
 			Valid: false,
