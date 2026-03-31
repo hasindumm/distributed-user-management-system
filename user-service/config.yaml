@@ -1,0 +1,2 @@
+database_url: "postgres://user:password@localhost:5432/userdb?sslmode=disable"
+nats_url: "nats://localhost:4222"

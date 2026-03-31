@@ -1,0 +1,230 @@
+package userclient
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/nats-io/nats.go"
+)
+
+const defaultTimeout = 5 * time.Second
+const defaultListLimit = 50
+
+type Config struct {
+	NATSURL string
+	Timeout time.Duration
+}
+
+type Client struct {
+	nc      *nats.Conn
+	timeout time.Duration
+	logger  *slog.Logger
+}
+
+func New(cfg Config, logger *slog.Logger) (*Client, error) {
+	nc, err := nats.Connect(cfg.NATSURL)
+	if err != nil {
+		return nil, fmt.Errorf("userclient: failed to connect to NATS: %w", err)
+	}
+
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+
+	logger.Info("user client connected to NATS", "url", cfg.NATSURL)
+
+	return &Client{
+		nc:      nc,
+		timeout: timeout,
+		logger:  logger,
+	}, nil
+}
+
+func NewWithConn(nc *nats.Conn, timeout time.Duration, logger *slog.Logger) *Client {
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+	return &Client{nc: nc, timeout: timeout, logger: logger}
+}
+
+func (c *Client) Close() {
+	if err := c.nc.Drain(); err != nil {
+		c.logger.Error("userclient: error draining NATS connection", "error", err)
+	}
+}
+
+func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (UserDTO, error) {
+	var resp CreateUserResponse
+	if err := c.request(ctx, SubjectCreateUser, req, &resp); err != nil {
+		return UserDTO{}, err
+	}
+	if resp.Error != nil {
+		return UserDTO{}, mapRPCError(resp.Error)
+	}
+	return *resp.User, nil
+}
+
+func (c *Client) GetUserByID(ctx context.Context, userID string) (UserDTO, error) {
+	req := GetUserByIDRequest{UserID: userID}
+	var resp GetUserByIDResponse
+	if err := c.request(ctx, SubjectGetUserByID, req, &resp); err != nil {
+		return UserDTO{}, err
+	}
+	if resp.Error != nil {
+		return UserDTO{}, mapRPCError(resp.Error)
+	}
+	return *resp.User, nil
+}
+
+func (c *Client) GetUserByEmail(ctx context.Context, email string) (UserDTO, error) {
+	req := GetUserByEmailRequest{Email: email}
+	var resp GetUserByEmailResponse
+	if err := c.request(ctx, SubjectGetUserByEmail, req, &resp); err != nil {
+		return UserDTO{}, err
+	}
+	if resp.Error != nil {
+		return UserDTO{}, mapRPCError(resp.Error)
+	}
+	return *resp.User, nil
+}
+
+func (c *Client) ListUsers(ctx context.Context, req ListUsersRequest) ([]UserDTO, error) {
+	if req.Limit == 0 {
+		req.Limit = defaultListLimit
+	}
+	var resp ListUsersResponse
+	if err := c.request(ctx, SubjectListUsers, req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, mapRPCError(resp.Error)
+	}
+	return resp.Users, nil
+}
+
+func (c *Client) UpdateUser(ctx context.Context, req UpdateUserRequest) (UserDTO, error) {
+	var resp UpdateUserResponse
+	if err := c.request(ctx, SubjectUpdateUser, req, &resp); err != nil {
+		return UserDTO{}, err
+	}
+	if resp.Error != nil {
+		return UserDTO{}, mapRPCError(resp.Error)
+	}
+	return *resp.User, nil
+}
+
+func (c *Client) DeleteUser(ctx context.Context, userID string) error {
+	req := DeleteUserRequest{UserID: userID}
+	var resp DeleteUserResponse
+	if err := c.request(ctx, SubjectDeleteUser, req, &resp); err != nil {
+		return err
+	}
+	if resp.Error != nil {
+		return mapRPCError(resp.Error)
+	}
+	return nil
+}
+
+type EventHandlers struct {
+	OnCreated func(UserCreatedEvent)
+	OnUpdated func(UserUpdatedEvent)
+	OnDeleted func(UserDeletedEvent)
+}
+
+type Subscription struct {
+	subs   []*nats.Subscription
+	logger *slog.Logger
+}
+
+func (s *Subscription) Unsubscribe() error {
+	for _, sub := range s.subs {
+		if err := sub.Unsubscribe(); err != nil {
+			s.logger.Error("userclient: failed to unsubscribe", "subject", sub.Subject, "error", err)
+			return fmt.Errorf("userclient: failed to unsubscribe from %s: %w", sub.Subject, err)
+		}
+		s.logger.Info("userclient: unsubscribed from event", "subject", sub.Subject)
+	}
+	return nil
+}
+
+func (c *Client) Subscribe(handlers EventHandlers) (*Subscription, error) {
+	sub := &Subscription{logger: c.logger}
+
+	if handlers.OnCreated != nil {
+		s, err := c.nc.Subscribe(SubjectUserCreated, func(msg *nats.Msg) {
+			var evt UserCreatedEvent
+			if err := json.Unmarshal(msg.Data, &evt); err != nil {
+				c.logger.Error("userclient: failed to unmarshal created event", "error", err)
+				return
+			}
+			c.logger.Debug("userclient: received user created event", "user_id", evt.User.UserID)
+			handlers.OnCreated(evt)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserCreated, err)
+		}
+		sub.subs = append(sub.subs, s)
+	}
+
+	if handlers.OnUpdated != nil {
+		s, err := c.nc.Subscribe(SubjectUserUpdated, func(msg *nats.Msg) {
+			var evt UserUpdatedEvent
+			if err := json.Unmarshal(msg.Data, &evt); err != nil {
+				c.logger.Error("userclient: failed to unmarshal updated event", "error", err)
+				return
+			}
+			c.logger.Debug("userclient: received user updated event", "user_id", evt.User.UserID)
+			handlers.OnUpdated(evt)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserUpdated, err)
+		}
+		sub.subs = append(sub.subs, s)
+	}
+
+	if handlers.OnDeleted != nil {
+		s, err := c.nc.Subscribe(SubjectUserDeleted, func(msg *nats.Msg) {
+			var evt UserDeletedEvent
+			if err := json.Unmarshal(msg.Data, &evt); err != nil {
+				c.logger.Error("userclient: failed to unmarshal deleted event", "error", err)
+				return
+			}
+			c.logger.Debug("userclient: received user deleted event", "user_id", evt.UserID)
+			handlers.OnDeleted(evt)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserDeleted, err)
+		}
+		sub.subs = append(sub.subs, s)
+	}
+
+	c.logger.Info("userclient: subscribed to user events")
+	return sub, nil
+}
+
+func (c *Client) request(ctx context.Context, subject string, payload, out any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("userclient: failed to marshal request for %s: %w", subject, err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	c.logger.DebugContext(ctx, "sending RPC request", "subject", subject)
+
+	msg, err := c.nc.RequestWithContext(ctx, subject, data)
+	if err != nil {
+		return fmt.Errorf("userclient: RPC request to %s failed: %w", subject, err)
+	}
+
+	if err := json.Unmarshal(msg.Data, out); err != nil {
+		return fmt.Errorf("userclient: failed to unmarshal response from %s: %w", subject, err)
+	}
+
+	return nil
+}
