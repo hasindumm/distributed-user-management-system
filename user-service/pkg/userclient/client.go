@@ -14,14 +14,17 @@ const defaultTimeout = 5 * time.Second
 const defaultListLimit = 50
 
 type Config struct {
-	NATSURL string
-	Timeout time.Duration
+	NATSURL      string
+	Timeout      time.Duration
+	CacheEnabled bool
 }
 
 type Client struct {
-	nc      *nats.Conn
-	timeout time.Duration
-	logger  *slog.Logger
+	nc       *nats.Conn
+	timeout  time.Duration
+	logger   *slog.Logger
+	cache    *cache
+	cacheSub *Subscription
 }
 
 func New(cfg Config, logger *slog.Logger) (*Client, error) {
@@ -37,11 +40,61 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 
 	logger.Info("user client connected to NATS", "url", cfg.NATSURL)
 
-	return &Client{
+	c := &Client{
 		nc:      nc,
 		timeout: timeout,
 		logger:  logger,
-	}, nil
+	}
+
+	if cfg.CacheEnabled {
+		c.cache = newCache()
+		logger.Info("userclient: cache enabled")
+		c.loadCache()
+		c.subscribeForCacheSync()
+	}
+
+	return c, nil
+}
+
+func (c *Client) loadCache() {
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+
+	req := ListUsersRequest{Limit: 1000, Offset: 0}
+	var resp ListUsersResponse
+	if err := c.request(ctx, SubjectListUsers, req, &resp); err != nil {
+		c.logger.Warn("userclient: cache load at startup failed, continuing with empty cache", "error", err)
+		return
+	}
+	if resp.Error != nil {
+		c.logger.Warn("userclient: cache load at startup returned error, continuing with empty cache", "error", resp.Error.Message)
+		return
+	}
+
+	c.cache.setAll(resp.Users)
+	c.logger.Info("userclient: cache loaded at startup", "count", len(resp.Users))
+}
+
+func (c *Client) subscribeForCacheSync() {
+	sub, err := c.Subscribe(EventHandlers{
+		OnCreated: func(evt UserCreatedEvent) {
+			c.cache.set(evt.User)
+			c.logger.Info("userclient: cache updated on created event", "user_id", evt.User.UserID)
+		},
+		OnUpdated: func(evt UserUpdatedEvent) {
+			c.cache.set(evt.User)
+			c.logger.Info("userclient: cache updated on updated event", "user_id", evt.User.UserID)
+		},
+		OnDeleted: func(evt UserDeletedEvent) {
+			c.cache.delete(evt.UserID)
+			c.logger.Info("userclient: cache removed on deleted event", "user_id", evt.UserID)
+		},
+	})
+	if err != nil {
+		c.logger.Warn("userclient: failed to subscribe for cache sync, cache may become stale", "error", err)
+		return
+	}
+	c.cacheSub = sub
 }
 
 func NewWithConn(nc *nats.Conn, timeout time.Duration, logger *slog.Logger) *Client {
@@ -52,6 +105,11 @@ func NewWithConn(nc *nats.Conn, timeout time.Duration, logger *slog.Logger) *Cli
 }
 
 func (c *Client) Close() {
+	if c.cacheSub != nil {
+		if err := c.cacheSub.Unsubscribe(); err != nil {
+			c.logger.Error("userclient: error unsubscribing cache sync", "error", err)
+		}
+	}
 	if err := c.nc.Drain(); err != nil {
 		c.logger.Error("userclient: error draining NATS connection", "error", err)
 	}
@@ -69,6 +127,14 @@ func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (UserDTO
 }
 
 func (c *Client) GetUserByID(ctx context.Context, userID string) (UserDTO, error) {
+	if c.cache != nil {
+		if u, ok := c.cache.get(userID); ok {
+			c.logger.DebugContext(ctx, "userclient: cache hit", "user_id", userID)
+			return u, nil
+		}
+		c.logger.DebugContext(ctx, "userclient: cache miss, falling through to RPC", "user_id", userID)
+	}
+
 	req := GetUserByIDRequest{UserID: userID}
 	var resp GetUserByIDResponse
 	if err := c.request(ctx, SubjectGetUserByID, req, &resp); err != nil {
@@ -81,6 +147,14 @@ func (c *Client) GetUserByID(ctx context.Context, userID string) (UserDTO, error
 }
 
 func (c *Client) GetUserByEmail(ctx context.Context, email string) (UserDTO, error) {
+	if c.cache != nil {
+		if u, ok := c.cache.getByEmail(email); ok {
+			c.logger.DebugContext(ctx, "userclient: cache hit", "email", email)
+			return u, nil
+		}
+		c.logger.DebugContext(ctx, "userclient: cache miss, falling through to RPC", "email", email)
+	}
+
 	req := GetUserByEmailRequest{Email: email}
 	var resp GetUserByEmailResponse
 	if err := c.request(ctx, SubjectGetUserByEmail, req, &resp); err != nil {
@@ -93,6 +167,12 @@ func (c *Client) GetUserByEmail(ctx context.Context, email string) (UserDTO, err
 }
 
 func (c *Client) ListUsers(ctx context.Context, req ListUsersRequest) ([]UserDTO, error) {
+	if c.cache != nil {
+		users := c.cache.list(req.Status)
+		c.logger.DebugContext(ctx, "userclient: cache hit for list", "count", len(users))
+		return users, nil
+	}
+
 	if req.Limit == 0 {
 		req.Limit = defaultListLimit
 	}
