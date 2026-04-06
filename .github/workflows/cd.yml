@@ -5,9 +5,8 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -17,10 +16,27 @@ jobs:
         with:
           go-version: 1.25.0
 
-      - name: Build Gateway Service
-        working-directory: ./gateway-service
-        run: go build -o gateway-service ./cmd/...
-
-      - name: Build User Service
+      - name: Build user-service binary (verify it compiles)
         working-directory: ./user-service
-        run: go build -o user-service ./cmd/...
+        run: go build ./cmd/...
+
+      - name: Build gateway-service binary (verify it compiles)
+        working-directory: ./gateway-service
+        run: go build ./cmd/...
+
+      - name: Build user-service Docker image
+        run: |
+          docker build \
+            -t user-service:latest \
+            -f user-service/Dockerfile \
+            .
+
+      - name: Build gateway-service Docker image
+        run: |
+          docker build \
+            -t gateway-service:latest \
+            -f gateway-service/Dockerfile \
+            .
+
+      - name: Verify Docker images were built successfully
+        run: docker images

@@ -54,7 +54,6 @@ func freePort() (int, error) {
 	return addr.Port, nil
 }
 
-// stubResponder subscribes to a NATS subject and replies with the given payload.
 func stubResponder(t *testing.T, nc *nats.Conn, subject string, payload any) {
 	t.Helper()
 	data, err := json.Marshal(payload)
@@ -65,8 +64,6 @@ func stubResponder(t *testing.T, nc *nats.Conn, subject string, payload any) {
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
 }
-
-// New / NewWithConn
 
 func TestNew_ValidURL(t *testing.T) {
 	url, shutdown := startServer(t)
@@ -86,13 +83,10 @@ func TestNew_DefaultTimeout(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
 
-	// Timeout=0 should default to 5s without error
 	client, err := userclient.New(userclient.Config{NATSURL: url, Timeout: 0}, testLogger)
 	require.NoError(t, err)
 	defer client.Close()
 }
-
-// CreateUser
 
 func TestClient_CreateUser_Success(t *testing.T) {
 	url, shutdown := startServer(t)
@@ -150,8 +144,6 @@ func TestClient_CreateUser_RPCError(t *testing.T) {
 	assert.ErrorIs(t, err, userclient.ErrAlreadyExists)
 }
 
-// GetUserByID
-
 func TestClient_GetUserByID_NotFound(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
@@ -171,8 +163,6 @@ func TestClient_GetUserByID_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, userclient.ErrNotFound)
 }
 
-// GetUserByEmail
-
 func TestClient_GetUserByEmail_Success(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
@@ -191,8 +181,6 @@ func TestClient_GetUserByEmail_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want.Email, got.Email)
 }
-
-// ListUsers
 
 func TestClient_ListUsers_Success(t *testing.T) {
 	url, shutdown := startServer(t)
@@ -218,8 +206,6 @@ func TestClient_ListUsers_Success(t *testing.T) {
 	assert.Len(t, got, 2)
 }
 
-// UpdateUser
-
 func TestClient_UpdateUser_Success(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
@@ -241,8 +227,6 @@ func TestClient_UpdateUser_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want.Status, got.Status)
 }
-
-// DeleteUser
 
 func TestClient_DeleteUser_Success(t *testing.T) {
 	url, shutdown := startServer(t)
@@ -278,8 +262,6 @@ func TestClient_DeleteUser_InternalError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, userclient.ErrInternal)
 }
-
-//mapRPCError coverage: ErrCodeValidation path
 
 func TestClient_ValidationError(t *testing.T) {
 	url, shutdown := startServer(t)

@@ -32,15 +32,6 @@ func (c *cache) delete(id string) {
 	delete(c.users, id)
 }
 
-func (c *cache) setAll(users []UserDTO) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.users = make(map[string]UserDTO, len(users))
-	for _, u := range users {
-		c.users[u.UserID] = u
-	}
-}
-
 func (c *cache) getByEmail(email string) (UserDTO, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -52,14 +43,30 @@ func (c *cache) getByEmail(email string) (UserDTO, bool) {
 	return UserDTO{}, false
 }
 
-func (c *cache) list(status *string) []UserDTO {
+func (c *cache) list(status *string, limit, offset int32) []UserDTO {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	result := make([]UserDTO, 0, len(c.users))
+
+	filtered := make([]UserDTO, 0, len(c.users))
 	for _, u := range c.users {
 		if status == nil || u.Status == *status {
-			result = append(result, u)
+			filtered = append(filtered, u)
 		}
 	}
-	return result
+
+	if limit == 0 {
+		return filtered
+	}
+
+	start := int(offset)
+	if start >= len(filtered) {
+		return []UserDTO{}
+	}
+
+	end := start + int(limit)
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+
+	return filtered[start:end]
 }

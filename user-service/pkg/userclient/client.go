@@ -10,21 +10,27 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-const defaultTimeout = 5 * time.Second
-const defaultListLimit = 50
-
 type Config struct {
 	NATSURL      string
 	Timeout      time.Duration
 	CacheEnabled bool
 }
 
+type cacheUpdate struct {
+	eventType string
+	user      *UserDTO
+	userID    string
+}
+
 type Client struct {
-	nc       *nats.Conn
-	timeout  time.Duration
-	logger   *slog.Logger
-	cache    *cache
-	cacheSub *Subscription
+	nc               *nats.Conn
+	timeout          time.Duration
+	logger           *slog.Logger
+	cache            *cache
+	cacheSub         *Subscription
+	updateCh         chan cacheUpdate
+	stopCh           chan struct{}
+	cacheFullyLoaded bool
 }
 
 func New(cfg Config, logger *slog.Logger) (*Client, error) {
@@ -48,6 +54,9 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 
 	if cfg.CacheEnabled {
 		c.cache = newCache()
+		c.updateCh = make(chan cacheUpdate, cacheUpdateBufferSize)
+		c.stopCh = make(chan struct{})
+		go c.processCacheUpdates()
 		logger.Info("userclient: cache enabled")
 		c.loadCache()
 		c.subscribeForCacheSync()
@@ -57,37 +66,80 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 }
 
 func (c *Client) loadCache() {
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), cacheStartupTimeout)
 	defer cancel()
 
-	req := ListUsersRequest{Limit: 1000, Offset: 0}
-	var resp ListUsersResponse
-	if err := c.request(ctx, SubjectListUsers, req, &resp); err != nil {
-		c.logger.Warn("userclient: cache load at startup failed, continuing with empty cache", "error", err)
-		return
-	}
-	if resp.Error != nil {
-		c.logger.Warn("userclient: cache load at startup returned error, continuing with empty cache", "error", resp.Error.Message)
-		return
+	offset := 0
+	total := 0
+
+	for {
+		req := ListUsersRequest{
+			Limit:  cacheStartupBatchSize,
+			Offset: int32(offset),
+		}
+		var resp ListUsersResponse
+		if err := c.request(ctx, SubjectListUsers, req, &resp); err != nil {
+			c.logger.Warn("userclient: cache startup load failed",
+				"offset", offset,
+				"loaded_so_far", total,
+				"error", err)
+			return
+		}
+		if resp.Error != nil {
+			c.logger.Warn("userclient: cache startup load returned error",
+				"offset", offset,
+				"error", resp.Error.Message)
+			return
+		}
+
+		for _, u := range resp.Users {
+			c.cache.set(u)
+		}
+		total += len(resp.Users)
+
+		c.logger.Info("userclient: cache startup batch loaded",
+			"batch_size", len(resp.Users),
+			"total_loaded", total,
+			"offset", offset)
+
+		if len(resp.Users) < int(cacheStartupBatchSize) {
+			c.cacheFullyLoaded = true
+			break
+		}
+
+		offset += int(cacheStartupBatchSize)
 	}
 
-	c.cache.setAll(resp.Users)
-	c.logger.Info("userclient: cache loaded at startup", "count", len(resp.Users))
+	c.logger.Info("userclient: cache loaded at startup",
+		"total_users", total,
+		"fully_loaded", c.cacheFullyLoaded)
 }
 
 func (c *Client) subscribeForCacheSync() {
 	sub, err := c.Subscribe(EventHandlers{
 		OnCreated: func(evt UserCreatedEvent) {
-			c.cache.set(evt.User)
-			c.logger.Info("userclient: cache updated on created event", "user_id", evt.User.UserID)
+			select {
+			case c.updateCh <- cacheUpdate{eventType: "created", user: &evt.User}:
+			default:
+				c.logger.Warn("userclient: cache update channel full, dropping created event",
+					"user_id", evt.User.UserID)
+			}
 		},
 		OnUpdated: func(evt UserUpdatedEvent) {
-			c.cache.set(evt.User)
-			c.logger.Info("userclient: cache updated on updated event", "user_id", evt.User.UserID)
+			select {
+			case c.updateCh <- cacheUpdate{eventType: "updated", user: &evt.User}:
+			default:
+				c.logger.Warn("userclient: cache update channel full, dropping updated event",
+					"user_id", evt.User.UserID)
+			}
 		},
 		OnDeleted: func(evt UserDeletedEvent) {
-			c.cache.delete(evt.UserID)
-			c.logger.Info("userclient: cache removed on deleted event", "user_id", evt.UserID)
+			select {
+			case c.updateCh <- cacheUpdate{eventType: "deleted", userID: evt.UserID}:
+			default:
+				c.logger.Warn("userclient: cache update channel full, dropping deleted event",
+					"user_id", evt.UserID)
+			}
 		},
 	})
 	if err != nil {
@@ -95,6 +147,58 @@ func (c *Client) subscribeForCacheSync() {
 		return
 	}
 	c.cacheSub = sub
+
+	if err := c.nc.Flush(); err != nil {
+		c.logger.Warn("userclient: failed to flush NATS connection after subscribing for cache sync",
+			"error", err)
+	}
+
+	c.logger.Info("userclient: cache sync subscription active")
+}
+
+func (c *Client) processCacheUpdates() {
+	for {
+		select {
+		case update, ok := <-c.updateCh:
+			if !ok {
+				// channel was closed — drain complete
+				return
+			}
+			c.applyCacheUpdate(update)
+
+		case <-c.stopCh:
+			for {
+				select {
+				case update := <-c.updateCh:
+					c.applyCacheUpdate(update)
+				default:
+					c.logger.Info("userclient: cache update processor stopped")
+					return
+				}
+			}
+		}
+	}
+}
+
+func (c *Client) applyCacheUpdate(update cacheUpdate) {
+	switch update.eventType {
+	case "created", "updated":
+		if update.user == nil {
+			c.logger.Error("userclient: cache update has nil user", "event_type", update.eventType)
+			return
+		}
+		c.cache.set(*update.user)
+		c.logger.Info("userclient: cache updated via event",
+			"event_type", update.eventType,
+			"user_id", update.user.UserID)
+	case "deleted":
+		c.cache.delete(update.userID)
+		c.logger.Info("userclient: cache entry removed via event",
+			"user_id", update.userID)
+	default:
+		c.logger.Error("userclient: unknown cache update event type",
+			"event_type", update.eventType)
+	}
 }
 
 func NewWithConn(nc *nats.Conn, timeout time.Duration, logger *slog.Logger) *Client {
@@ -110,6 +214,11 @@ func (c *Client) Close() {
 			c.logger.Error("userclient: error unsubscribing cache sync", "error", err)
 		}
 	}
+
+	if c.stopCh != nil {
+		close(c.stopCh)
+	}
+
 	if err := c.nc.Drain(); err != nil {
 		c.logger.Error("userclient: error draining NATS connection", "error", err)
 	}
@@ -143,6 +252,12 @@ func (c *Client) GetUserByID(ctx context.Context, userID string) (UserDTO, error
 	if resp.Error != nil {
 		return UserDTO{}, mapRPCError(resp.Error)
 	}
+
+	if c.cache != nil {
+		c.cache.set(*resp.User)
+		c.logger.DebugContext(ctx, "userclient: cache populated on miss", "user_id", userID)
+	}
+
 	return *resp.User, nil
 }
 
@@ -163,19 +278,33 @@ func (c *Client) GetUserByEmail(ctx context.Context, email string) (UserDTO, err
 	if resp.Error != nil {
 		return UserDTO{}, mapRPCError(resp.Error)
 	}
+
+	if c.cache != nil {
+		c.cache.set(*resp.User)
+		c.logger.DebugContext(ctx, "userclient: cache populated on email miss", "email", email)
+	}
+
 	return *resp.User, nil
 }
 
 func (c *Client) ListUsers(ctx context.Context, req ListUsersRequest) ([]UserDTO, error) {
-	if c.cache != nil {
-		users := c.cache.list(req.Status)
-		c.logger.DebugContext(ctx, "userclient: cache hit for list", "count", len(users))
-		return users, nil
-	}
-
 	if req.Limit == 0 {
 		req.Limit = defaultListLimit
 	}
+	if c.cache != nil && c.cacheFullyLoaded {
+		users := c.cache.list(req.Status, req.Limit, req.Offset)
+		c.logger.DebugContext(ctx, "userclient: cache hit for list",
+			"count", len(users),
+			"limit", req.Limit,
+			"offset", req.Offset)
+		return users, nil
+	}
+
+	if c.cache != nil && !c.cacheFullyLoaded {
+		c.logger.DebugContext(ctx,
+			"userclient: cache incomplete, falling through to RPC for list")
+	}
+
 	var resp ListUsersResponse
 	if err := c.request(ctx, SubjectListUsers, req, &resp); err != nil {
 		return nil, err

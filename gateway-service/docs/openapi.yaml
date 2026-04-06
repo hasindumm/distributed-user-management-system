@@ -1,0 +1,371 @@
+openapi: "3.0.3"
+
+info:
+  title: Distributed User Management — Gateway API
+  description: >
+    REST API exposed by the gateway-service. All user operations are
+    delegated to the user-service over NATS. The gateway never
+    touches the database directly.
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: users
+    description: User CRUD operations
+  - name: health
+    description: Service health
+
+paths:
+
+  /api/v1/health:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/users:
+    post:
+      tags: [users]
+      summary: Create a new user
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      tags: [users]
+      summary: List users
+      operationId: listUsers
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by user status
+          schema:
+            $ref: "#/components/schemas/UserStatus"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return (default 20, max 1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          description: Number of results to skip for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: UUID of the user
+        schema:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+
+    get:
+      tags: [users]
+      summary: Get user by ID
+      operationId: getUserById
+      responses:
+        "200":
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      tags: [users]
+      summary: Update user
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: User updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [users]
+      summary: Delete user
+      operationId: deleteUser
+      responses:
+        "204":
+          description: User deleted successfully
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/email/{email}:
+    parameters:
+      - name: email
+        in: path
+        required: true
+        description: Email address of the user
+        schema:
+          type: string
+          format: email
+          example: john@example.com
+
+    get:
+      tags: [users]
+      summary: Get user by email
+      operationId: getUserByEmail
+      responses:
+        "200":
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+
+  schemas:
+
+    UserStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE, SUSPENDED]
+      example: ACTIVE
+
+    CreateUserRequest:
+      type: object
+      required: [first_name, last_name, email]
+      properties:
+        first_name:
+          type: string
+          maxLength: 100
+          example: John
+        last_name:
+          type: string
+          maxLength: 100
+          example: Doe
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          example: john@example.com
+        phone:
+          type: string
+          maxLength: 20
+          example: "+1-555-0100"
+          nullable: true
+        age:
+          type: integer
+          minimum: 0
+          maximum: 150
+          example: 30
+          nullable: true
+        status:
+          $ref: "#/components/schemas/UserStatus"
+
+    UpdateUserRequest:
+      type: object
+      required: [first_name, last_name, email, status]
+      properties:
+        first_name:
+          type: string
+          maxLength: 100
+          example: John
+        last_name:
+          type: string
+          maxLength: 100
+          example: Doe
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          example: john@example.com
+        phone:
+          type: string
+          maxLength: 20
+          example: "+1-555-0100"
+          nullable: true
+        age:
+          type: integer
+          minimum: 0
+          maximum: 150
+          example: 30
+          nullable: true
+        status:
+          $ref: "#/components/schemas/UserStatus"
+
+    UserResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        first_name:
+          type: string
+          example: John
+        last_name:
+          type: string
+          example: Doe
+        email:
+          type: string
+          format: email
+          example: john@example.com
+        phone:
+          type: string
+          example: "+1-555-0100"
+          nullable: true
+        age:
+          type: integer
+          example: 30
+          nullable: true
+        status:
+          $ref: "#/components/schemas/UserStatus"
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-01T00:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2024-01-01T00:00:00Z"
+
+    ErrorDetail:
+      type: object
+      properties:
+        code:
+          type: string
+          enum: [BAD_REQUEST, NOT_FOUND, ALREADY_EXISTS, VALIDATION_ERROR, INTERNAL_ERROR]
+          example: NOT_FOUND
+        message:
+          type: string
+          example: "user not found"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+
+  responses:
+
+    BadRequest:
+      description: Invalid request — bad JSON, invalid UUID in path, or validation failure
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: "Key: 'CreateUserRequest.Email' Error:Field validation for 'Email' failed on the 'email' tag"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: NOT_FOUND
+              message: "not found: user not found"
+
+    Conflict:
+      description: Resource already exists
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: ALREADY_EXISTS
+              message: "already exists: email already in use"
+
+    InternalError:
+      description: Unexpected internal error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: "an internal error occurred"
