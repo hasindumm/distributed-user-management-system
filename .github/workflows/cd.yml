@@ -18,11 +18,11 @@ jobs:
 
       - name: Build user-service binary (verify it compiles)
         working-directory: ./user-service
-        run: go build ./cmd/...
+        run: go build -o /tmp/user-service ./cmd/main.go
 
       - name: Build gateway-service binary (verify it compiles)
         working-directory: ./gateway-service
-        run: go build ./cmd/...
+        run: go build -o /tmp/gateway-service ./cmd/main.go
 
       - name: Build user-service Docker image
         run: |
