@@ -40,6 +40,18 @@ distributed-user-management-system/
 ├── gateway-service/
 │   ├── cmd/
 │   │   └── main.go
+│   ├── internal/
+│   │   ├── adapters/
+│   │   │   ├── httphandler/    # REST inbound adapter
+│   │   │   ├── userclientadapter/ # outbound adapter (wraps userclient)
+│   │   │   └── wshandler/      # WebSocket inbound adapter
+│   │   ├── app/                # core service (ports only, no userclient)
+│   │   ├── dto/                # HTTP/WS data shapes + validation tags
+│   │   ├── middleware/         # request logging
+│   │   └── ports/              # UserService, UserClient, Subscription, events
+│   ├── docs/
+│   │   ├── openapi.yaml        # REST API spec (OpenAPI 3.0.3)
+│   │   └── asyncapi.yaml       # WebSocket API spec (AsyncAPI 2.6.0)
 │   └── go.mod
 ├── user-service/
 │   ├── cmd/
@@ -56,8 +68,8 @@ distributed-user-management-system/
 │   │       └── postgresadaptor/
 │   └── go.mod
 ├── docs/
-│   ├── openapi.yaml        # (upcoming)
-│   └── asyncapi.yaml       # (upcoming)
+│   ├── openapi.yaml        # REST API spec (OpenAPI 3.0.3)
+│   └── asyncapi.yaml       # WebSocket API spec (AsyncAPI 2.6.0)
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml
@@ -77,6 +89,96 @@ distributed-user-management-system/
 - golangci-lint v1.64.8
 - sqlc
 
+---
+
+## Run the Full System (Docker)
+
+The entire system — PostgreSQL, NATS, user-service, and gateway — runs with a single command.
+
+### Start everything
+
+```bash
+docker-compose up
+```
+
+Docker Compose will:
+1. Start **postgres** and wait until it is healthy (accepting connections)
+2. Start **nats** and wait until it is healthy (monitoring endpoint responds)
+3. Start **user-service** — connects to postgres, runs migrations, subscribes to NATS
+4. Start **gateway** — connects to NATS, starts HTTP server on port 8080
+
+On the first run, Docker will build the images automatically. This takes a few minutes.
+
+### Start in the background
+
+```bash
+docker-compose up -d
+```
+
+### View logs
+
+```bash
+# All services
+docker-compose logs -f
+
+# One service only
+docker-compose logs -f user-service
+docker-compose logs -f gateway
+```
+
+### Stop everything
+
+```bash
+docker-compose down
+```
+
+### Rebuild images after code changes
+
+```bash
+docker-compose build
+docker-compose up
+```
+
+Or in one step:
+
+```bash
+docker-compose up --build
+```
+
+### Verify the system is running
+
+```bash
+curl http://localhost:8080/api/v1/health
+```
+
+Expected response: `{"status":"ok"}`
+
+### Create a user
+
+```bash
+curl -X POST http://localhost:8080/api/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{"first_name":"Jane","last_name":"Doe","email":"jane@example.com","status":"ACTIVE"}'
+```
+
+### List users
+
+```bash
+curl http://localhost:8080/api/v1/users
+```
+
+---
+
+## Run Services Locally (without Docker)
+
+For local development, run postgres and NATS via Docker, then the services directly with Go.
+
+### Start infrastructure only
+
+```bash
+docker-compose up postgres nats -d
+```
+
 ### Install pre-commit hooks
 
 ```bash
@@ -95,12 +197,6 @@ This enforces:
 go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 ```
 
-### Start infrastructure (NATS + PostgreSQL)
-
-```bash
-docker compose up -d
-```
-
 ### Run services locally
 
 ```bash
@@ -109,7 +205,7 @@ cd user-service
 go run cmd/main.go
 
 # Override config via environment variables
-DATABASE_URL="postgres://user:pass@localhost:5432/userdb?sslmode=disable" \
+DATABASE_URL="postgres://user:pass@localhost:5432/users?sslmode=disable" \
 NATS_URL="nats://localhost:4222" \
 go run cmd/main.go
 
@@ -266,6 +362,102 @@ sub.Unsubscribe()
 ```
 
 All three handlers are optional — omit any field to skip that event type.
+
+---
+
+## Gateway REST API
+
+Full spec: `gateway-service/docs/openapi.yaml` (OpenAPI 3.0.3).
+
+Base URL: `http://localhost:8080`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/health` | Health check |
+| `POST` | `/api/v1/users` | Create user |
+| `GET` | `/api/v1/users` | List users (query: `status`, `limit`, `offset`) |
+| `GET` | `/api/v1/users/{id}` | Get user by UUID |
+| `PUT` | `/api/v1/users/{id}` | Update user |
+| `DELETE` | `/api/v1/users/{id}` | Delete user |
+| `GET` | `/api/v1/users/email/{email}` | Get user by email |
+
+---
+
+## Gateway WebSocket API
+
+Full spec: `gateway-service/docs/asyncapi.yaml` (AsyncAPI 2.6.0).
+
+Connect: `ws://localhost:8080/api/v1/ws`
+
+### Protocol
+
+Every message is a JSON object with an `action` field. Optionally include a `request_id` — it is echoed back in the reply so you can match responses to requests.
+
+**Request envelope (client → server):**
+```json
+{
+  "action":     "user.create",
+  "request_id": "req-001",
+  "payload":    { ... }
+}
+```
+
+**Response envelope (server → client):**
+```json
+{ "action": "user.create", "request_id": "req-001", "success": true,  "payload": { ... } }
+{ "action": "user.create", "request_id": "req-001", "success": false, "error": { "code": "...", "message": "..." } }
+```
+
+### Actions
+
+| Action | Payload fields | Description |
+|--------|----------------|-------------|
+| `user.create` | `first_name`, `last_name`, `email`, `phone`?, `age`?, `status`? | Create a user |
+| `user.get_by_id` | `user_id` | Get user by UUID |
+| `user.get_by_email` | `email` | Get user by email |
+| `user.list` | `status`?, `limit`?, `offset`? | List users |
+| `user.update` | `user_id`, `first_name`, `last_name`, `email`, `status`, `phone`?, `age`? | Update a user |
+| `user.delete` | `user_id` | Delete a user |
+| `user.subscribe` | _(none)_ | Start receiving real-time push events |
+| `user.unsubscribe` | _(none)_ | Stop receiving push events |
+
+### Error codes
+
+| Code | Meaning |
+|------|---------|
+| `BAD_REQUEST` | Missing required field or malformed JSON |
+| `NOT_FOUND` | No user matched the given ID or email |
+| `ALREADY_EXISTS` | Email is already taken |
+| `VALIDATION_ERROR` | Field validation failed |
+| `INTERNAL_ERROR` | Unexpected server-side failure |
+| `UNKNOWN_ACTION` | Unrecognised action string |
+
+### Real-time push events
+
+After sending `user.subscribe`, the server pushes these messages without being asked:
+
+| Action | Trigger | Payload |
+|--------|---------|---------|
+| `user.created` | Any user is created | Full user object |
+| `user.updated` | Any user is updated | Full user object |
+| `user.deleted` | Any user is deleted | `{ "user_id": "..." }` |
+
+Push events have **no `request_id`** — they are not replies to any request.
+
+### Quick example (wscat)
+
+```bash
+# Install: npm install -g wscat
+wscat -c ws://localhost:8080/api/v1/ws
+
+# Create a user
+{"action":"user.create","request_id":"1","payload":{"first_name":"John","last_name":"Doe","email":"john@example.com","status":"ACTIVE"}}
+
+# Subscribe to live events
+{"action":"user.subscribe","request_id":"2"}
+
+# Now any create/update/delete anywhere will push an event to this connection
+```
 
 ---
 

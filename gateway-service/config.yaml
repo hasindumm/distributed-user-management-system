@@ -1,0 +1,4 @@
+nats_url: "nats://127.0.0.1:4222"
+port: "8080"
+cache_enabled: true
+log_level: "debug"

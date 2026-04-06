@@ -1,0 +1,632 @@
+asyncapi: "2.6.0"
+
+info:
+  title: Distributed User Management — Gateway WebSocket API
+  description: >
+    Real-time WebSocket API exposed by the gateway-service at /api/v1/ws.
+    Clients send JSON messages with an "action" field and receive JSON responses.
+    After subscribing, the server also pushes unsolicited event messages whenever
+    users are created, updated, or deleted in the system.
+  version: "1.0.0"
+
+servers:
+  local:
+    url: ws://localhost:8080/api/v1/ws
+    protocol: ws
+    description: Local development
+
+# ---------------------------------------------------------------------------
+# Channels
+# ---------------------------------------------------------------------------
+
+channels:
+  /api/v1/ws:
+    description: >
+      Single persistent WebSocket channel. The client sends request messages
+      (action + optional payload) and the server replies with response messages.
+      When the client is subscribed to events the server also sends unsolicited
+      push messages (user.created, user.updated, user.deleted).
+    bindings:
+      ws:
+        method: GET
+        headers:
+          type: object
+          properties:
+            Upgrade:
+              type: string
+              enum: [websocket]
+            Connection:
+              type: string
+              enum: [Upgrade]
+
+    publish:
+      summary: Messages sent FROM the client TO the server
+      description: >
+        Each message has an "action" field that controls what happens.
+        All CRUD actions mirror the REST API but over the persistent connection.
+      operationId: clientSend
+      message:
+        oneOf:
+          - $ref: "#/components/messages/CreateUserRequest"
+          - $ref: "#/components/messages/GetByIDRequest"
+          - $ref: "#/components/messages/GetByEmailRequest"
+          - $ref: "#/components/messages/ListUsersRequest"
+          - $ref: "#/components/messages/UpdateUserRequest"
+          - $ref: "#/components/messages/DeleteUserRequest"
+          - $ref: "#/components/messages/SubscribeRequest"
+          - $ref: "#/components/messages/UnsubscribeRequest"
+
+    subscribe:
+      summary: Messages sent FROM the server TO the client
+      description: >
+        CRUD replies are sent in response to a specific client request and carry
+        the same request_id back. Event pushes (user.created, user.updated,
+        user.deleted) are sent whenever a change occurs and have no request_id.
+      operationId: serverSend
+      message:
+        oneOf:
+          - $ref: "#/components/messages/SuccessResponse"
+          - $ref: "#/components/messages/ErrorResponse"
+          - $ref: "#/components/messages/UserCreatedEvent"
+          - $ref: "#/components/messages/UserUpdatedEvent"
+          - $ref: "#/components/messages/UserDeletedEvent"
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+
+components:
+
+  # -------------------------------------------------------------------------
+  # Messages — client → server (requests)
+  # -------------------------------------------------------------------------
+
+  messages:
+
+    CreateUserRequest:
+      name: user.create
+      title: Create User
+      summary: Create a new user
+      payload:
+        type: object
+        required: [action, payload]
+        properties:
+          action:
+            type: string
+            const: user.create
+          request_id:
+            type: string
+            description: Optional client-generated ID echoed in the reply
+            example: req-001
+          payload:
+            $ref: "#/components/schemas/CreateUserPayload"
+      examples:
+        - name: create-john
+          payload:
+            action: user.create
+            request_id: req-001
+            payload:
+              first_name: John
+              last_name: Doe
+              email: john@example.com
+              status: ACTIVE
+
+    GetByIDRequest:
+      name: user.get_by_id
+      title: Get User by ID
+      summary: Fetch a single user by UUID
+      payload:
+        type: object
+        required: [action, payload]
+        properties:
+          action:
+            type: string
+            const: user.get_by_id
+          request_id:
+            type: string
+            example: req-002
+          payload:
+            type: object
+            required: [user_id]
+            properties:
+              user_id:
+                type: string
+                format: uuid
+                example: 550e8400-e29b-41d4-a716-446655440000
+      examples:
+        - name: get-by-id
+          payload:
+            action: user.get_by_id
+            request_id: req-002
+            payload:
+              user_id: 550e8400-e29b-41d4-a716-446655440000
+
+    GetByEmailRequest:
+      name: user.get_by_email
+      title: Get User by Email
+      summary: Fetch a single user by email address
+      payload:
+        type: object
+        required: [action, payload]
+        properties:
+          action:
+            type: string
+            const: user.get_by_email
+          request_id:
+            type: string
+            example: req-003
+          payload:
+            type: object
+            required: [email]
+            properties:
+              email:
+                type: string
+                format: email
+                example: john@example.com
+      examples:
+        - name: get-by-email
+          payload:
+            action: user.get_by_email
+            request_id: req-003
+            payload:
+              email: john@example.com
+
+    ListUsersRequest:
+      name: user.list
+      title: List Users
+      summary: List users with optional filters and pagination
+      payload:
+        type: object
+        required: [action]
+        properties:
+          action:
+            type: string
+            const: user.list
+          request_id:
+            type: string
+            example: req-004
+          payload:
+            type: object
+            properties:
+              status:
+                $ref: "#/components/schemas/UserStatus"
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 1000
+                default: 20
+                example: 20
+              offset:
+                type: integer
+                minimum: 0
+                default: 0
+                example: 0
+      examples:
+        - name: list-active
+          payload:
+            action: user.list
+            request_id: req-004
+            payload:
+              status: ACTIVE
+              limit: 20
+              offset: 0
+
+    UpdateUserRequest:
+      name: user.update
+      title: Update User
+      summary: Update an existing user
+      payload:
+        type: object
+        required: [action, payload]
+        properties:
+          action:
+            type: string
+            const: user.update
+          request_id:
+            type: string
+            example: req-005
+          payload:
+            $ref: "#/components/schemas/UpdateUserPayload"
+      examples:
+        - name: update-john
+          payload:
+            action: user.update
+            request_id: req-005
+            payload:
+              user_id: 550e8400-e29b-41d4-a716-446655440000
+              first_name: Jane
+              last_name: Doe
+              email: jane@example.com
+              status: ACTIVE
+
+    DeleteUserRequest:
+      name: user.delete
+      title: Delete User
+      summary: Delete a user by UUID
+      payload:
+        type: object
+        required: [action, payload]
+        properties:
+          action:
+            type: string
+            const: user.delete
+          request_id:
+            type: string
+            example: req-006
+          payload:
+            type: object
+            required: [user_id]
+            properties:
+              user_id:
+                type: string
+                format: uuid
+                example: 550e8400-e29b-41d4-a716-446655440000
+      examples:
+        - name: delete-user
+          payload:
+            action: user.delete
+            request_id: req-006
+            payload:
+              user_id: 550e8400-e29b-41d4-a716-446655440000
+
+    SubscribeRequest:
+      name: user.subscribe
+      title: Subscribe to User Events
+      summary: >
+        Start receiving real-time push events for user.created, user.updated,
+        and user.deleted. If already subscribed, the old subscription is
+        replaced automatically.
+      payload:
+        type: object
+        required: [action]
+        properties:
+          action:
+            type: string
+            const: user.subscribe
+          request_id:
+            type: string
+            example: req-007
+      examples:
+        - name: subscribe
+          payload:
+            action: user.subscribe
+            request_id: req-007
+
+    UnsubscribeRequest:
+      name: user.unsubscribe
+      title: Unsubscribe from User Events
+      summary: Stop receiving real-time push events. Safe to call even if not subscribed.
+      payload:
+        type: object
+        required: [action]
+        properties:
+          action:
+            type: string
+            const: user.unsubscribe
+          request_id:
+            type: string
+            example: req-008
+      examples:
+        - name: unsubscribe
+          payload:
+            action: user.unsubscribe
+            request_id: req-008
+
+  # -------------------------------------------------------------------------
+  # Messages — server → client (responses and push events)
+  # -------------------------------------------------------------------------
+
+    SuccessResponse:
+      name: success-response
+      title: Success Response
+      summary: >
+        Sent in reply to any client request that succeeded. The request_id
+        echoes the value from the original request. Payload shape depends on
+        the action (UserResponse for CRUD, array for list, absent for delete).
+      payload:
+        type: object
+        required: [action, success]
+        properties:
+          action:
+            type: string
+            description: Same action string as the request
+            example: user.create
+          request_id:
+            type: string
+            description: Echoed from the client request
+            example: req-001
+          success:
+            type: boolean
+            const: true
+          payload:
+            description: >
+              Result data. Shape varies by action:
+              UserResponse for create/get/update,
+              array of UserResponse for list,
+              absent for delete and subscribe/unsubscribe.
+            oneOf:
+              - $ref: "#/components/schemas/UserResponse"
+              - type: array
+                items:
+                  $ref: "#/components/schemas/UserResponse"
+      examples:
+        - name: create-success
+          payload:
+            action: user.create
+            request_id: req-001
+            success: true
+            payload:
+              user_id: 550e8400-e29b-41d4-a716-446655440000
+              first_name: John
+              last_name: Doe
+              email: john@example.com
+              status: ACTIVE
+              created_at: "2024-01-01T00:00:00Z"
+              updated_at: "2024-01-01T00:00:00Z"
+
+    ErrorResponse:
+      name: error-response
+      title: Error Response
+      summary: Sent when any action fails. success is always false.
+      payload:
+        type: object
+        required: [action, success, error]
+        properties:
+          action:
+            type: string
+            description: Same action string as the request
+            example: user.get_by_id
+          request_id:
+            type: string
+            description: Echoed from the client request
+            example: req-002
+          success:
+            type: boolean
+            const: false
+          error:
+            $ref: "#/components/schemas/WSError"
+      examples:
+        - name: not-found
+          payload:
+            action: user.get_by_id
+            request_id: req-002
+            success: false
+            error:
+              code: NOT_FOUND
+              message: "not found: user not found"
+        - name: bad-request
+          payload:
+            action: user.create
+            request_id: req-001
+            success: false
+            error:
+              code: BAD_REQUEST
+              message: invalid payload
+
+    UserCreatedEvent:
+      name: user.created
+      title: User Created Event
+      summary: >
+        Pushed to all subscribed clients when a new user is created anywhere
+        in the system. Has no request_id — it is not a reply to a request.
+      payload:
+        type: object
+        required: [action, success, payload]
+        properties:
+          action:
+            type: string
+            const: user.created
+          success:
+            type: boolean
+            const: true
+          payload:
+            $ref: "#/components/schemas/UserResponse"
+      examples:
+        - name: user-created-push
+          payload:
+            action: user.created
+            success: true
+            payload:
+              user_id: 550e8400-e29b-41d4-a716-446655440000
+              first_name: John
+              last_name: Doe
+              email: john@example.com
+              status: ACTIVE
+              created_at: "2024-01-01T00:00:00Z"
+              updated_at: "2024-01-01T00:00:00Z"
+
+    UserUpdatedEvent:
+      name: user.updated
+      title: User Updated Event
+      summary: >
+        Pushed to all subscribed clients when an existing user is updated.
+        Has no request_id.
+      payload:
+        type: object
+        required: [action, success, payload]
+        properties:
+          action:
+            type: string
+            const: user.updated
+          success:
+            type: boolean
+            const: true
+          payload:
+            $ref: "#/components/schemas/UserResponse"
+      examples:
+        - name: user-updated-push
+          payload:
+            action: user.updated
+            success: true
+            payload:
+              user_id: 550e8400-e29b-41d4-a716-446655440000
+              first_name: Jane
+              last_name: Doe
+              email: jane@example.com
+              status: ACTIVE
+              created_at: "2024-01-01T00:00:00Z"
+              updated_at: "2024-06-01T12:00:00Z"
+
+    UserDeletedEvent:
+      name: user.deleted
+      title: User Deleted Event
+      summary: >
+        Pushed to all subscribed clients when a user is deleted.
+        Only carries the user_id — the full user record is gone.
+        Has no request_id.
+      payload:
+        type: object
+        required: [action, success, payload]
+        properties:
+          action:
+            type: string
+            const: user.deleted
+          success:
+            type: boolean
+            const: true
+          payload:
+            type: object
+            required: [user_id]
+            properties:
+              user_id:
+                type: string
+                format: uuid
+                example: 550e8400-e29b-41d4-a716-446655440000
+      examples:
+        - name: user-deleted-push
+          payload:
+            action: user.deleted
+            success: true
+            payload:
+              user_id: 550e8400-e29b-41d4-a716-446655440000
+
+  # -------------------------------------------------------------------------
+  # Schemas
+  # -------------------------------------------------------------------------
+
+  schemas:
+
+    UserStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE, SUSPENDED]
+      example: ACTIVE
+
+    CreateUserPayload:
+      type: object
+      required: [first_name, last_name, email]
+      properties:
+        first_name:
+          type: string
+          maxLength: 100
+          example: John
+        last_name:
+          type: string
+          maxLength: 100
+          example: Doe
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          example: john@example.com
+        phone:
+          type: string
+          maxLength: 20
+          example: "+1-555-0100"
+          nullable: true
+        age:
+          type: integer
+          minimum: 0
+          maximum: 150
+          example: 30
+          nullable: true
+        status:
+          $ref: "#/components/schemas/UserStatus"
+
+    UpdateUserPayload:
+      type: object
+      required: [user_id, first_name, last_name, email, status]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        first_name:
+          type: string
+          maxLength: 100
+          example: John
+        last_name:
+          type: string
+          maxLength: 100
+          example: Doe
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          example: john@example.com
+        phone:
+          type: string
+          maxLength: 20
+          example: "+1-555-0100"
+          nullable: true
+        age:
+          type: integer
+          minimum: 0
+          maximum: 150
+          example: 30
+          nullable: true
+        status:
+          $ref: "#/components/schemas/UserStatus"
+
+    UserResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        first_name:
+          type: string
+          example: John
+        last_name:
+          type: string
+          example: Doe
+        email:
+          type: string
+          format: email
+          example: john@example.com
+        phone:
+          type: string
+          example: "+1-555-0100"
+          nullable: true
+        age:
+          type: integer
+          example: 30
+          nullable: true
+        status:
+          $ref: "#/components/schemas/UserStatus"
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-01T00:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2024-01-01T00:00:00Z"
+
+    WSError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - BAD_REQUEST
+            - NOT_FOUND
+            - ALREADY_EXISTS
+            - VALIDATION_ERROR
+            - INTERNAL_ERROR
+            - UNKNOWN_ACTION
+          example: NOT_FOUND
+        message:
+          type: string
+          example: "not found: user not found"

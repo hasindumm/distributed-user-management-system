@@ -7,35 +7,40 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"user-service/internal/adapters/natsadaptor"
-	"user-service/internal/adapters/postgresadaptor"
-	"user-service/internal/service"
-	"user-service/pkg/config"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/nats-io/nats.go"
+
+	"user-service/internal/adapters/natsadaptor"
+	"user-service/internal/adapters/postgresadaptor"
+	"user-service/internal/config"
+	"user-service/internal/service"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-	slog.SetDefault(logger)
+	// load config first using a bootstrap logger
+	bootstrapLogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(bootstrapLogger)
 
-	slog.Info("service starting", "service", "user-service")
-
-	cfg, err := config.Load("config.yaml")
+	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
 
-	if cfg.DatabaseURL == "" {
-		slog.Error("database_url is not set")
-		os.Exit(1)
+	// setup real logger using config log level
+	logLevel := slog.LevelInfo
+	if cfg.LogLevel == "debug" {
+		logLevel = slog.LevelDebug
 	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: logLevel,
+	}))
+	slog.SetDefault(logger)
+
+	slog.Info("service starting", "service", "user-service")
 
 	// DB
 	database, err := sql.Open("postgres", cfg.DatabaseURL)
@@ -65,18 +70,13 @@ func main() {
 	slog.Info("migrations applied successfully")
 
 	// NATS
-	natsURL := cfg.NATSURL
-	if natsURL == "" {
-		natsURL = nats.DefaultURL
-	}
-
-	nc, err := nats.Connect(natsURL)
+	nc, err := nats.Connect(cfg.NATSURL)
 	if err != nil {
-		slog.Error("failed to connect to NATS", "url", natsURL, "error", err)
+		slog.Error("failed to connect to NATS", "url", cfg.NATSURL, "error", err)
 		os.Exit(1)
 	}
 
-	slog.Info("NATS connected", "url", natsURL)
+	slog.Info("NATS connected", "url", cfg.NATSURL)
 
 	// Wire up layers
 	repo := postgresadaptor.NewPostgresRepository(database)
