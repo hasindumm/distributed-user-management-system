@@ -19,7 +19,7 @@ type Handler struct {
 	logger   *slog.Logger
 }
 
-func New(service ports.UserService, logger *slog.Logger) *Handler {
+func NewHttpHandler(service ports.UserService, logger *slog.Logger) *Handler {
 	return &Handler{
 		service:  service,
 		validate: validator.New(),
@@ -28,14 +28,13 @@ func New(service ports.UserService, logger *slog.Logger) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	r.Get("/api/v1/health", h.handleHealth)
-
-	r.Post("/api/v1/users", h.handleCreate)
-	r.Get("/api/v1/users", h.handleList)
-	r.Get("/api/v1/users/email/{email}", h.handleGetByEmail)
-	r.Get("/api/v1/users/{id}", h.handleGetByID)
-	r.Put("/api/v1/users/{id}", h.handleUpdate)
-	r.Delete("/api/v1/users/{id}", h.handleDelete)
+	r.Get(PathHealth, h.handleHealth)
+	r.Post(PathUsers, h.handleCreate)
+	r.Get(PathUsers, h.handleList)
+	r.Get(PathUserByEmail, h.handleGetByEmail)
+	r.Get(PathUserByID, h.handleGetByID)
+	r.Put(PathUserByID, h.handleUpdate)
+	r.Delete(PathUserByID, h.handleDelete)
 }
 
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {

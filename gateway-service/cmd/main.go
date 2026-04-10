@@ -43,7 +43,7 @@ func main() {
 		"cache_enabled", cfg.CacheEnabled,
 	)
 
-	client, err := userclient.New(userclient.Config{
+	client, err := userclient.NewUserClient(userclient.Config{
 		NATSURL:      cfg.NATSURL,
 		Timeout:      5 * time.Second,
 		CacheEnabled: cfg.CacheEnabled,
@@ -54,13 +54,13 @@ func main() {
 	}
 	defer client.Close()
 
-	adapter := userclientadapter.New(client)
+	adapter := userclientadapter.NewUserClientAdapter(client)
 
-	svc := app.New(adapter, logger)
+	svc := app.NewApp(adapter, logger)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestLogger(logger))
-	h := httphandler.New(svc, logger)
+	h := httphandler.NewHttpHandler(svc, logger)
 	h.RegisterRoutes(r)
 
 	hub := wshandler.NewHub(logger)

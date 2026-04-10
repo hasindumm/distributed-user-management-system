@@ -14,7 +14,7 @@ type UserService struct {
 	logger *slog.Logger
 }
 
-func New(repo ports.UserRepository, logger *slog.Logger) *UserService {
+func NewService(repo ports.UserRepository, logger *slog.Logger) *UserService {
 	return &UserService{
 		repo:   repo,
 		logger: logger,
@@ -73,6 +73,18 @@ func (s *UserService) ListUsers(ctx context.Context, status *domain.UserStatus, 
 	users, err := s.repo.List(ctx, status, limit, offset)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to list users", "error", err)
+		return nil, err
+	}
+
+	return users, nil
+}
+
+func (s *UserService) ListAllUsers(ctx context.Context) ([]domain.User, error) {
+	s.logger.InfoContext(ctx, "listing all users for cache sync")
+
+	users, err := s.repo.ListAll(ctx, nil)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "failed to list all users", "error", err)
 		return nil, err
 	}
 

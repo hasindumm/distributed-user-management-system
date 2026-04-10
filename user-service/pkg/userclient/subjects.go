@@ -5,6 +5,7 @@ const (
 	SubjectGetUserByID    = "users.v1.get.by_id"
 	SubjectGetUserByEmail = "users.v1.get.by_email"
 	SubjectListUsers      = "users.v1.list"
+	SubjectListAllUsers   = "users.v1.list.all"
 	SubjectUpdateUser     = "users.v1.update"
 	SubjectDeleteUser     = "users.v1.delete"
 

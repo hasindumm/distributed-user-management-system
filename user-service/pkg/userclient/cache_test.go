@@ -29,8 +29,9 @@ func makeUser(id, email string) userclient.UserDTO {
 
 func newCachedClient(t *testing.T, nc *nats.Conn, url string, seedUsers []userclient.UserDTO) *userclient.Client {
 	t.Helper()
-	stubResponder(t, nc, userclient.SubjectListUsers, userclient.ListUsersResponse{Users: seedUsers})
-	client, err := userclient.New(userclient.Config{
+	stubResponder(t, nc, userclient.SubjectListAllUsers,
+		userclient.ListAllUsersResponse{Users: seedUsers})
+	client, err := userclient.NewUserClient(userclient.Config{
 		NATSURL:      url,
 		Timeout:      3 * time.Second,
 		CacheEnabled: true,
@@ -216,7 +217,6 @@ func TestCache_OnDeletedEvent_RemovesFromCache(t *testing.T) {
 
 	publishEvent(t, nc, userclient.SubjectUserDeleted, userclient.UserDeletedEvent{UserID: user.UserID})
 
-	// register the RPC stub before polling so every cache-miss falls through to RPC
 	stubResponder(t, nc, userclient.SubjectGetUserByID, userclient.GetUserByIDResponse{
 		Error: &userclient.RPCError{Code: userclient.ErrCodeNotFound, Message: "not found"},
 	})
@@ -337,7 +337,7 @@ func TestCache_LazyLoad_GetByEmail(t *testing.T) {
 	mu.Unlock()
 }
 
-func TestCache_PaginatedStartup(t *testing.T) {
+func TestCache_StartupLoad_LoadsAllUsers(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
 
@@ -345,34 +345,11 @@ func TestCache_PaginatedStartup(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	firstBatch := make([]userclient.UserDTO, 1000)
-	for i := range firstBatch {
-		firstBatch[i] = makeUser(fmt.Sprintf("paginated-%d", i), fmt.Sprintf("page%d@example.com", i))
-	}
-	secondBatch := make([]userclient.UserDTO, 500)
-	for i := range secondBatch {
-		secondBatch[i] = makeUser(fmt.Sprintf("paginated-%d", 1000+i), fmt.Sprintf("page%d@example.com", 1000+i))
-	}
+	seed := makeUsers(50, "startup-all")
+	stubResponder(t, nc, userclient.SubjectListAllUsers,
+		userclient.ListAllUsersResponse{Users: seed})
 
-	sub, err := nc.Subscribe(userclient.SubjectListUsers, func(msg *nats.Msg) {
-		var req userclient.ListUsersRequest
-		require.NoError(t, json.Unmarshal(msg.Data, &req))
-
-		var resp userclient.ListUsersResponse
-		if req.Offset == 0 {
-			resp = userclient.ListUsersResponse{Users: firstBatch}
-		} else {
-			resp = userclient.ListUsersResponse{Users: secondBatch}
-		}
-		data, marshalErr := json.Marshal(resp)
-		require.NoError(t, marshalErr)
-		require.NoError(t, msg.Respond(data))
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe() //nolint:errcheck
-	require.NoError(t, nc.Flush())
-
-	client, err := userclient.New(userclient.Config{
+	client, err := userclient.NewUserClient(userclient.Config{
 		NATSURL:      url,
 		Timeout:      3 * time.Second,
 		CacheEnabled: true,
@@ -380,9 +357,11 @@ func TestCache_PaginatedStartup(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 
-	users, err := client.ListUsers(context.Background(), userclient.ListUsersRequest{Limit: 2000})
+	got, err := client.ListUsers(context.Background(),
+		userclient.ListUsersRequest{Limit: 100})
 	require.NoError(t, err)
-	assert.Len(t, users, 1500, "loadCache should have loaded all 1500 users across two batches")
+	assert.Len(t, got, 50,
+		"all users must be loaded at startup via list.all in one request")
 }
 
 func TestCache_ChannelFull_DropsWithWarning(t *testing.T) {
@@ -408,7 +387,6 @@ func TestCache_ChannelFull_DropsWithWarning(t *testing.T) {
 
 	select {
 	case <-done:
-		// all publishes completed — no deadlock or panic
 	case <-time.After(3 * time.Second):
 		t.Fatal("publishing events timed out — select/default drop guard may be missing")
 	}
@@ -434,7 +412,7 @@ func TestCache_GoroutineStopsOnClose(t *testing.T) {
 
 	stubResponder(t, nc, userclient.SubjectListUsers, userclient.ListUsersResponse{Users: nil})
 
-	client, err := userclient.New(userclient.Config{
+	client, err := userclient.NewUserClient(userclient.Config{
 		NATSURL:      url,
 		Timeout:      3 * time.Second,
 		CacheEnabled: true,
@@ -444,7 +422,7 @@ func TestCache_GoroutineStopsOnClose(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(goroutineStacks(), "processCacheUpdates")
 	}, 500*time.Millisecond, 5*time.Millisecond,
-		"processCacheUpdates goroutine should be running after New()")
+		"processCacheUpdates goroutine should be running after NewUserClient()")
 
 	client.Close()
 
@@ -529,39 +507,39 @@ func TestListUsers_CacheIncomplete_FallsThroughToRPC(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	partialBatch := make([]userclient.UserDTO, 1000)
-	for i := range partialBatch {
-		partialBatch[i] = makeUser(
-			fmt.Sprintf("incomplete-%d", i),
-			fmt.Sprintf("incomplete%d@example.com", i),
-		)
-	}
-
-	listSub, err := nc.Subscribe(userclient.SubjectListUsers, func(msg *nats.Msg) {
-		data, marshalErr := json.Marshal(userclient.ListUsersResponse{Users: partialBatch})
-		require.NoError(t, marshalErr)
-		require.NoError(t, msg.Respond(data))
+	errSub, err := nc.Subscribe(userclient.SubjectListAllUsers, func(msg *nats.Msg) {
+		data, _ := json.Marshal(userclient.ListAllUsersResponse{ //nolint:errcheck
+			Error: &userclient.RPCError{
+				Code: userclient.ErrCodeInternal, Message: "startup error",
+			},
+		})
+		_ = msg.Respond(data) //nolint:errcheck
 	})
 	require.NoError(t, err)
-	defer listSub.Unsubscribe() //nolint:errcheck
 	require.NoError(t, nc.Flush())
 
-	rpcUser := makeUser("rpc-list-user", "rpclist@example.com")
-	stubResponder(t, nc, userclient.SubjectGetUserByID, userclient.GetUserByIDResponse{User: &rpcUser})
-
-	noCacheClient := userclient.NewWithConn(nc, 3*time.Second, testLogger)
-	var rpcListCalls int
-	var mu2 sync.Mutex
-	sub2, err := nc.Subscribe(userclient.SubjectListUsers+".direct", func(msg *nats.Msg) {
-		mu2.Lock()
-		rpcListCalls++
-		mu2.Unlock()
-	})
+	client, err := userclient.NewUserClient(userclient.Config{
+		NATSURL:      url,
+		Timeout:      3 * time.Second,
+		CacheEnabled: true,
+	}, testLogger)
 	require.NoError(t, err)
-	defer sub2.Unsubscribe() //nolint:errcheck
+	defer client.Close()
 
-	_, err = noCacheClient.ListUsers(context.Background(), userclient.ListUsersRequest{Limit: 10})
+	require.NoError(t, errSub.Unsubscribe())
+
+	wantUsers := []userclient.UserDTO{
+		makeUser("rpc-fallthrough", "rpc@example.com"),
+	}
+	stubResponder(t, nc, userclient.SubjectListUsers,
+		userclient.ListUsersResponse{Users: wantUsers})
+
+	got, err := client.ListUsers(context.Background(),
+		userclient.ListUsersRequest{Limit: 10})
 	require.NoError(t, err)
+	assert.Len(t, got, 1)
+	assert.Equal(t, "rpc-fallthrough", got[0].UserID,
+		"ListUsers must fall through to RPC when cache startup failed")
 }
 
 func TestListUsers_CacheDisabled_AlwaysRPC(t *testing.T) {
@@ -634,7 +612,7 @@ func TestLoadCache_SetsFullyLoadedOnCompletion(t *testing.T) {
 		"cacheFullyLoaded should be true after natural loop end — ListUsers must not call RPC")
 }
 
-func TestLoadCache_DoesNotSetFullyLoadedOnTimeout(t *testing.T) {
+func TestLoadCache_DoesNotSetFullyLoadedOnError(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
 
@@ -642,16 +620,19 @@ func TestLoadCache_DoesNotSetFullyLoadedOnTimeout(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	errSub, err := nc.Subscribe(userclient.SubjectListUsers, func(msg *nats.Msg) {
-		data, _ := json.Marshal(userclient.ListUsersResponse{ //nolint:errcheck
-			Error: &userclient.RPCError{Code: userclient.ErrCodeInternal, Message: "simulated failure"},
+	errSub, err := nc.Subscribe(userclient.SubjectListAllUsers, func(msg *nats.Msg) {
+		data, _ := json.Marshal(userclient.ListAllUsersResponse{ //nolint:errcheck
+			Error: &userclient.RPCError{
+				Code:    userclient.ErrCodeInternal,
+				Message: "simulated failure",
+			},
 		})
 		_ = msg.Respond(data) //nolint:errcheck
 	})
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
 
-	client, err := userclient.New(userclient.Config{
+	client, err := userclient.NewUserClient(userclient.Config{
 		NATSURL:      url,
 		Timeout:      3 * time.Second,
 		CacheEnabled: true,
@@ -661,13 +642,17 @@ func TestLoadCache_DoesNotSetFullyLoadedOnTimeout(t *testing.T) {
 
 	require.NoError(t, errSub.Unsubscribe())
 
-	wantUsers := []userclient.UserDTO{makeUser("timeout-user", "timeout@example.com")}
-	stubResponder(t, nc, userclient.SubjectListUsers, userclient.ListUsersResponse{Users: wantUsers})
+	wantUsers := []userclient.UserDTO{
+		makeUser("error-fallthrough-user", "error@example.com"),
+	}
+	stubResponder(t, nc, userclient.SubjectListUsers,
+		userclient.ListUsersResponse{Users: wantUsers})
 
-	got, err := client.ListUsers(context.Background(), userclient.ListUsersRequest{Limit: 10})
+	got, err := client.ListUsers(context.Background(),
+		userclient.ListUsersRequest{Limit: 10})
 	require.NoError(t, err)
-	assert.Len(t, got, 1, "ListUsers must fall through to RPC when cache is incomplete")
-	assert.Equal(t, "timeout-user", got[0].UserID)
+	assert.Len(t, got, 1, "ListUsers must fall through to RPC when cache startup failed")
+	assert.Equal(t, "error-fallthrough-user", got[0].UserID)
 }
 
 func makeUsers(n int, prefix string) []userclient.UserDTO {

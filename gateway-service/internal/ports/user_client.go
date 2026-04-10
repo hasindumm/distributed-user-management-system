@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"gateway-service/internal/dto"
+	"user-service/pkg/userclient"
 )
 
 type UserClient interface {
@@ -13,5 +14,5 @@ type UserClient interface {
 	ListUsers(ctx context.Context, req dto.ListUsersRequest) ([]dto.UserResponse, error)
 	UpdateUser(ctx context.Context, id string, req dto.UpdateUserRequest) (dto.UserResponse, error)
 	DeleteUser(ctx context.Context, id string) error
-	Subscribe(handlers EventHandlers) (Subscription, error)
+	Subscribe(ch chan<- userclient.Event) (Subscription, error)
 }

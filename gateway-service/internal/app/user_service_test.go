@@ -10,6 +10,7 @@ import (
 	"gateway-service/internal/app"
 	"gateway-service/internal/dto"
 	"gateway-service/internal/ports"
+	"user-service/pkg/userclient"
 )
 
 type mockUserClient struct {
@@ -19,7 +20,7 @@ type mockUserClient struct {
 	listUsers      func(ctx context.Context, req dto.ListUsersRequest) ([]dto.UserResponse, error)
 	updateUser     func(ctx context.Context, id string, req dto.UpdateUserRequest) (dto.UserResponse, error)
 	deleteUser     func(ctx context.Context, id string) error
-	subscribe      func(handlers ports.EventHandlers) (ports.Subscription, error)
+	subscribe      func(ch chan<- userclient.Event) (ports.Subscription, error)
 }
 
 func (m *mockUserClient) CreateUser(ctx context.Context, req dto.CreateUserRequest) (dto.UserResponse, error) {
@@ -40,8 +41,8 @@ func (m *mockUserClient) UpdateUser(ctx context.Context, id string, req dto.Upda
 func (m *mockUserClient) DeleteUser(ctx context.Context, id string) error {
 	return m.deleteUser(ctx, id)
 }
-func (m *mockUserClient) Subscribe(handlers ports.EventHandlers) (ports.Subscription, error) {
-	return m.subscribe(handlers)
+func (m *mockUserClient) Subscribe(ch chan<- userclient.Event) (ports.Subscription, error) {
+	return m.subscribe(ch)
 }
 
 var _ ports.UserClient = (*mockUserClient)(nil)
@@ -66,7 +67,7 @@ func TestApp_CreateUser_Success(t *testing.T) {
 			return sampleResp, nil
 		},
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	got, err := svc.CreateUser(context.Background(), dto.CreateUserRequest{
 		FirstName: "Test", LastName: "User", Email: "test@example.com",
@@ -86,7 +87,7 @@ func TestApp_CreateUser_Error(t *testing.T) {
 			return dto.UserResponse{}, wantErr
 		},
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	_, err := svc.CreateUser(context.Background(), dto.CreateUserRequest{})
 	if !errors.Is(err, wantErr) {
@@ -100,7 +101,7 @@ func TestApp_GetUserByID_Success(t *testing.T) {
 			return sampleResp, nil
 		},
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	got, err := svc.GetUserByID(context.Background(), sampleResp.UserID)
 	if err != nil {
@@ -118,7 +119,7 @@ func TestApp_GetUserByID_NotFound(t *testing.T) {
 			return dto.UserResponse{}, wantErr
 		},
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	_, err := svc.GetUserByID(context.Background(), "missing-id")
 	if !errors.Is(err, wantErr) {
@@ -132,7 +133,7 @@ func TestApp_ListUsers_Success(t *testing.T) {
 			return []dto.UserResponse{sampleResp, sampleResp}, nil
 		},
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	got, err := svc.ListUsers(context.Background(), dto.ListUsersRequest{Limit: 10, Offset: 0})
 	if err != nil {
@@ -149,7 +150,7 @@ func TestApp_GetUserByEmail_Success(t *testing.T) {
 			return sampleResp, nil
 		},
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	got, err := svc.GetUserByEmail(context.Background(), sampleResp.Email)
 	if err != nil {
@@ -166,7 +167,7 @@ func TestApp_UpdateUser_Success(t *testing.T) {
 			return sampleResp, nil
 		},
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	got, err := svc.UpdateUser(context.Background(), sampleResp.UserID, dto.UpdateUserRequest{
 		FirstName: "Test", LastName: "User", Email: sampleResp.Email, Status: "ACTIVE",
@@ -183,7 +184,7 @@ func TestApp_DeleteUser_Success(t *testing.T) {
 	client := &mockUserClient{
 		deleteUser: func(_ context.Context, _ string) error { return nil },
 	}
-	svc := app.New(client, noopLogger())
+	svc := app.NewApp(client, noopLogger())
 
 	if err := svc.DeleteUser(context.Background(), sampleResp.UserID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
