@@ -55,7 +55,7 @@ type mockUserClient struct {
 	listUsers      func(ctx context.Context, req dto.ListUsersRequest) ([]dto.UserResponse, error)
 	updateUser     func(ctx context.Context, id string, req dto.UpdateUserRequest) (dto.UserResponse, error)
 	deleteUser     func(ctx context.Context, id string) error
-	subscribe      func(handlers ports.EventHandlers) (ports.Subscription, error)
+	subscribe      func(ch chan<- userclient.Event) (ports.Subscription, error)
 }
 
 func (m *mockUserClient) CreateUser(ctx context.Context, req dto.CreateUserRequest) (dto.UserResponse, error) {
@@ -76,8 +76,8 @@ func (m *mockUserClient) UpdateUser(ctx context.Context, id string, req dto.Upda
 func (m *mockUserClient) DeleteUser(ctx context.Context, id string) error {
 	return m.deleteUser(ctx, id)
 }
-func (m *mockUserClient) Subscribe(handlers ports.EventHandlers) (ports.Subscription, error) {
-	return m.subscribe(handlers)
+func (m *mockUserClient) Subscribe(ch chan<- userclient.Event) (ports.Subscription, error) {
+	return m.subscribe(ch)
 }
 
 var _ ports.UserClient = (*mockUserClient)(nil)
@@ -433,7 +433,7 @@ func TestUnknownAction(t *testing.T) {
 func TestHandleSubscribe_Success(t *testing.T) {
 	mockSub := &mockSubscription{}
 	client := &mockUserClient{
-		subscribe: func(handlers ports.EventHandlers) (ports.Subscription, error) {
+		subscribe: func(ch chan<- userclient.Event) (ports.Subscription, error) {
 			return mockSub, nil
 		},
 	}
@@ -464,11 +464,11 @@ func TestHandleUnsubscribe_WithoutSubscribe(t *testing.T) {
 }
 
 func TestHandleSubscribe_EventPushed(t *testing.T) {
-	var capturedHandlers ports.EventHandlers
+	var capturedCh chan<- userclient.Event
 
 	client := &mockUserClient{
-		subscribe: func(handlers ports.EventHandlers) (ports.Subscription, error) {
-			capturedHandlers = handlers
+		subscribe: func(ch chan<- userclient.Event) (ports.Subscription, error) {
+			capturedCh = ch
 			return &mockSubscription{}, nil
 		},
 	}
@@ -476,7 +476,10 @@ func TestHandleSubscribe_EventPushed(t *testing.T) {
 
 	roundTrip(t, conn, map[string]any{"action": "user.subscribe"})
 
-	capturedHandlers.OnCreated(ports.UserCreatedEvent{User: sampleUser})
+	capturedCh <- userclient.Event{
+		Type:    "created",
+		Payload: userclient.UserCreatedEvent{User: userclient.UserDTO{UserID: testUUID}},
+	}
 
 	var pushed map[string]any
 	if err := conn.ReadJSON(&pushed); err != nil {
@@ -496,17 +499,20 @@ func TestHandleSubscribe_EventPushed(t *testing.T) {
 }
 
 func TestHandleSubscribe_UpdateEventPushed(t *testing.T) {
-	var capturedHandlers ports.EventHandlers
+	var capturedCh chan<- userclient.Event
 	client := &mockUserClient{
-		subscribe: func(handlers ports.EventHandlers) (ports.Subscription, error) {
-			capturedHandlers = handlers
+		subscribe: func(ch chan<- userclient.Event) (ports.Subscription, error) {
+			capturedCh = ch
 			return &mockSubscription{}, nil
 		},
 	}
 	_, conn := newTestServer(t, &mockUserService{}, client)
 	roundTrip(t, conn, map[string]any{"action": "user.subscribe"})
 
-	capturedHandlers.OnUpdated(ports.UserUpdatedEvent{User: sampleUser})
+	capturedCh <- userclient.Event{
+		Type:    "updated",
+		Payload: userclient.UserUpdatedEvent{User: userclient.UserDTO{UserID: testUUID}},
+	}
 
 	var pushed map[string]any
 	if err := conn.ReadJSON(&pushed); err != nil {
@@ -518,17 +524,20 @@ func TestHandleSubscribe_UpdateEventPushed(t *testing.T) {
 }
 
 func TestHandleSubscribe_DeleteEventPushed(t *testing.T) {
-	var capturedHandlers ports.EventHandlers
+	var capturedCh chan<- userclient.Event
 	client := &mockUserClient{
-		subscribe: func(handlers ports.EventHandlers) (ports.Subscription, error) {
-			capturedHandlers = handlers
+		subscribe: func(ch chan<- userclient.Event) (ports.Subscription, error) {
+			capturedCh = ch
 			return &mockSubscription{}, nil
 		},
 	}
 	_, conn := newTestServer(t, &mockUserService{}, client)
 	roundTrip(t, conn, map[string]any{"action": "user.subscribe"})
 
-	capturedHandlers.OnDeleted(ports.UserDeletedEvent{UserID: testUUID})
+	capturedCh <- userclient.Event{
+		Type:    "deleted",
+		Payload: userclient.UserDeletedEvent{UserID: testUUID},
+	}
 
 	var pushed map[string]any
 	if err := conn.ReadJSON(&pushed); err != nil {
@@ -680,7 +689,7 @@ func TestPingPong_DeadConnection(t *testing.T) {
 
 func TestHub_BroadcastToSubscribed(t *testing.T) {
 	mc := &mockUserClient{
-		subscribe: func(handlers ports.EventHandlers) (ports.Subscription, error) {
+		subscribe: func(ch chan<- userclient.Event) (ports.Subscription, error) {
 			return &mockSubscription{}, nil
 		},
 	}
@@ -725,7 +734,7 @@ func TestHub_SlowClient_Disconnected(t *testing.T) {
 	cfg.WriteWait = 150 * time.Millisecond
 
 	mc := &mockUserClient{
-		subscribe: func(handlers ports.EventHandlers) (ports.Subscription, error) {
+		subscribe: func(ch chan<- userclient.Event) (ports.Subscription, error) {
 			return &mockSubscription{}, nil
 		},
 	}
@@ -792,7 +801,7 @@ func TestUnknownAction_ErrorResponse(t *testing.T) {
 
 func TestMultipleClients_IndependentSubscriptions(t *testing.T) {
 	mc := &mockUserClient{
-		subscribe: func(handlers ports.EventHandlers) (ports.Subscription, error) {
+		subscribe: func(ch chan<- userclient.Event) (ports.Subscription, error) {
 			return &mockSubscription{}, nil
 		},
 	}

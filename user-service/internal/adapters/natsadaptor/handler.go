@@ -45,6 +45,7 @@ func (h *Handler) Subscribe() error {
 		{userclient.SubjectGetUserByID, h.handleGetByID},
 		{userclient.SubjectGetUserByEmail, h.handleGetByEmail},
 		{userclient.SubjectListUsers, h.handleList},
+		{userclient.SubjectListAllUsers, h.handleListAll},
 		{userclient.SubjectUpdateUser, h.handleUpdate},
 		{userclient.SubjectDeleteUser, h.handleDelete},
 	}
@@ -209,6 +210,25 @@ func (h *Handler) handleList(msg *nats.Msg) {
 	h.reply(msg, userclient.ListUsersResponse{Users: dtos})
 }
 
+func (h *Handler) handleListAll(msg *nats.Msg) {
+	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+	defer cancel()
+
+	users, err := h.svc.ListAllUsers(ctx)
+	if err != nil {
+		h.reply(msg, userclient.ListAllUsersResponse{
+			Error: mapDomainErr(err),
+		})
+		return
+	}
+
+	dtos := make([]userclient.UserDTO, len(users))
+	for i, u := range users {
+		dtos[i] = toDTO(u)
+	}
+	h.reply(msg, userclient.ListAllUsersResponse{Users: dtos})
+}
+
 func (h *Handler) handleUpdate(msg *nats.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
 	defer cancel()
@@ -310,6 +330,7 @@ func (h *Handler) publishEvent(subject string, payload any) {
 		h.logger.Error("failed to marshal event", "subject", subject, "error", err)
 		return
 	}
+	// retry (use library ) if publish event failed.
 	if err := h.nc.Publish(subject, data); err != nil {
 		h.logger.Error("failed to publish event", "subject", subject, "error", err)
 		return

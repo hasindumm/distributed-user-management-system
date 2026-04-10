@@ -26,14 +26,14 @@ func NewActionRouter(
 ) *ActionRouter {
 	return &ActionRouter{
 		handlers: map[string]ActionHandler{
-			"user.create":       &createHandler{svc: svc, logger: logger},
-			"user.get_by_id":    &getByIDHandler{svc: svc, logger: logger},
-			"user.get_by_email": &getByEmailHandler{svc: svc, logger: logger},
-			"user.list":         &listHandler{svc: svc, logger: logger},
-			"user.update":       &updateHandler{svc: svc, logger: logger},
-			"user.delete":       &deleteHandler{svc: svc, logger: logger},
-			"user.subscribe":    &subscribeHandler{client: client, hub: hub, logger: logger},
-			"user.unsubscribe":  &unsubscribeHandler{logger: logger},
+			ActionUserCreate:      &createHandler{svc: svc, logger: logger},
+			ActionUserGetByID:     &getByIDHandler{svc: svc, logger: logger},
+			ActionUserGetByEmail:  &getByEmailHandler{svc: svc, logger: logger},
+			ActionUserList:        &listHandler{svc: svc, logger: logger},
+			ActionUserUpdate:      &updateHandler{svc: svc, logger: logger},
+			ActionUserDelete:      &deleteHandler{svc: svc, logger: logger},
+			ActionUserSubscribe:   &subscribeHandler{client: client, hub: hub, logger: logger},
+			ActionUserUnsubscribe: &unsubscribeHandler{logger: logger},
 		},
 		logger: logger,
 	}
@@ -87,12 +87,6 @@ func NewWSHandler(
 		},
 		logger: logger,
 	}
-}
-
-func New(svc ports.UserService, client ports.UserClient, logger *slog.Logger) *WSHandler {
-	hub := NewHub(logger)
-	go hub.Run()
-	return NewWSHandler(svc, client, hub, DefaultConfig(), logger)
 }
 
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

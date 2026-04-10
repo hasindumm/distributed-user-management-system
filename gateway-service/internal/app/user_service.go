@@ -13,7 +13,7 @@ type UserService struct {
 	logger *slog.Logger
 }
 
-func New(client ports.UserClient, logger *slog.Logger) *UserService {
+func NewApp(client ports.UserClient, logger *slog.Logger) *UserService {
 	return &UserService{client: client, logger: logger}
 }
 

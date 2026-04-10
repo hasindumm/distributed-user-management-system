@@ -20,6 +20,7 @@ type mockRepo struct {
 	getByIDFn    func(ctx context.Context, id uuid.UUID) (domain.User, error)
 	getByEmailFn func(ctx context.Context, email string) (domain.User, error)
 	listFn       func(ctx context.Context, status *domain.UserStatus, limit, offset int32) ([]domain.User, error)
+	listAllFn    func(ctx context.Context, status *domain.UserStatus) ([]domain.User, error)
 	updateFn     func(ctx context.Context, user domain.User) (domain.User, error)
 	deleteFn     func(ctx context.Context, id uuid.UUID) error
 }
@@ -38,6 +39,13 @@ func (m *mockRepo) GetByEmail(ctx context.Context, email string) (domain.User, e
 
 func (m *mockRepo) List(ctx context.Context, status *domain.UserStatus, limit, offset int32) ([]domain.User, error) {
 	return m.listFn(ctx, status, limit, offset)
+}
+
+func (m *mockRepo) ListAll(ctx context.Context, status *domain.UserStatus) ([]domain.User, error) {
+	if m.listAllFn != nil {
+		return m.listAllFn(ctx, status)
+	}
+	return nil, nil
 }
 
 func (m *mockRepo) Update(ctx context.Context, user domain.User) (domain.User, error) {
@@ -73,7 +81,7 @@ func TestCreateUser_Success(t *testing.T) {
 			return want, nil
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	got, err := svc.CreateUser(context.Background(), want.FirstName, want.LastName, want.Email, want.Phone, want.Age, want.Status)
 	require.NoError(t, err)
@@ -86,7 +94,7 @@ func TestCreateUser_DuplicateEmail(t *testing.T) {
 			return domain.User{}, domain.ErrEmailAlreadyExists
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	_, err := svc.CreateUser(context.Background(), "A", "B", "dup@example.com", nil, nil, domain.UserStatusActive)
 	assert.ErrorIs(t, err, domain.ErrEmailAlreadyExists)
@@ -99,7 +107,7 @@ func TestGetUserByID_Success(t *testing.T) {
 			return want, nil
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	got, err := svc.GetUserByID(context.Background(), want.UserId)
 	require.NoError(t, err)
@@ -112,7 +120,7 @@ func TestGetUserByID_NotFound(t *testing.T) {
 			return domain.User{}, domain.ErrUserNotFound
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	_, err := svc.GetUserByID(context.Background(), uuid.New())
 	assert.ErrorIs(t, err, domain.ErrUserNotFound)
@@ -125,7 +133,7 @@ func TestGetUserByEmail_Success(t *testing.T) {
 			return want, nil
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	got, err := svc.GetUserByEmail(context.Background(), want.Email)
 	require.NoError(t, err)
@@ -138,7 +146,7 @@ func TestGetUserByEmail_NotFound(t *testing.T) {
 			return domain.User{}, domain.ErrUserNotFound
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	_, err := svc.GetUserByEmail(context.Background(), "missing@example.com")
 	assert.ErrorIs(t, err, domain.ErrUserNotFound)
@@ -151,7 +159,7 @@ func TestListUsers_Success(t *testing.T) {
 			return users, nil
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	got, err := svc.ListUsers(context.Background(), nil, 10, 0)
 	require.NoError(t, err)
@@ -165,7 +173,7 @@ func TestListUsers_RepoError(t *testing.T) {
 			return nil, repoErr
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	_, err := svc.ListUsers(context.Background(), nil, 10, 0)
 	assert.ErrorIs(t, err, repoErr)
@@ -178,7 +186,7 @@ func TestUpdateUser_Success(t *testing.T) {
 			return u, nil
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	got, err := svc.UpdateUser(context.Background(), want)
 	require.NoError(t, err)
@@ -191,7 +199,7 @@ func TestUpdateUser_NotFound(t *testing.T) {
 			return domain.User{}, domain.ErrUserNotFound
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	_, err := svc.UpdateUser(context.Background(), sampleUser())
 	assert.ErrorIs(t, err, domain.ErrUserNotFound)
@@ -203,7 +211,7 @@ func TestDeleteUser_Success(t *testing.T) {
 			return nil
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	err := svc.DeleteUser(context.Background(), uuid.New())
 	require.NoError(t, err)
@@ -215,7 +223,7 @@ func TestDeleteUser_NotFound(t *testing.T) {
 			return domain.ErrUserNotFound
 		},
 	}
-	svc := service.New(repo, testLogger)
+	svc := service.NewService(repo, testLogger)
 
 	err := svc.DeleteUser(context.Background(), uuid.New())
 	assert.ErrorIs(t, err, domain.ErrUserNotFound)

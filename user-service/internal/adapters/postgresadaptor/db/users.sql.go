@@ -121,6 +121,48 @@ func (q *Queries) GetUserByID(ctx context.Context, userID uuid.UUID) (User, erro
 	return i, err
 }
 
+const listAllUsers = `-- name: ListAllUsers :many
+SELECT user_id, first_name, last_name, email, phone, age, status, deleted_at, created_at, updated_at FROM users
+WHERE deleted_at IS NULL
+  AND ($1::VARCHAR IS NULL
+       OR status = $1::VARCHAR)
+ORDER BY created_at DESC
+`
+
+func (q *Queries) ListAllUsers(ctx context.Context, status sql.NullString) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, listAllUsers, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.UserID,
+			&i.FirstName,
+			&i.LastName,
+			&i.Email,
+			&i.Phone,
+			&i.Age,
+			&i.Status,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsers = `-- name: ListUsers :many
 SELECT user_id, first_name, last_name, email, phone, age, status, deleted_at, created_at, updated_at FROM users
 WHERE deleted_at IS NULL

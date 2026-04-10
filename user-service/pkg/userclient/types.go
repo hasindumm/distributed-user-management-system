@@ -103,3 +103,13 @@ type UserUpdatedEvent struct {
 type UserDeletedEvent struct {
 	UserID string `json:"user_id"`
 }
+
+type ListAllUsersResponse struct {
+	Users []UserDTO `json:"users"`
+	Error *RPCError `json:"error,omitempty"`
+}
+
+type Event struct {
+	Type    string
+	Payload any
+}

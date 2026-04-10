@@ -44,6 +44,9 @@ func (m *mockUserService) GetUserByEmail(ctx context.Context, email string) (dom
 func (m *mockUserService) ListUsers(ctx context.Context, status *domain.UserStatus, limit, offset int32) ([]domain.User, error) {
 	return m.listUsers(ctx, status, limit, offset)
 }
+func (m *mockUserService) ListAllUsers(ctx context.Context) ([]domain.User, error) {
+	return nil, nil
+}
 func (m *mockUserService) UpdateUser(ctx context.Context, user domain.User) (domain.User, error) {
 	return m.updateUser(ctx, user)
 }

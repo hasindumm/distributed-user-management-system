@@ -12,7 +12,6 @@ import (
 
 	"gateway-service/internal/adapters/userclientadapter"
 	"gateway-service/internal/dto"
-	"gateway-service/internal/ports"
 	"user-service/pkg/userclient"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -80,7 +79,7 @@ var sampleUserDTO = userclient.UserDTO{
 func newAdapter(t *testing.T, nc *nats.Conn) *userclientadapter.Adapter {
 	t.Helper()
 	client := userclient.NewWithConn(nc, 3*time.Second, noopLogger())
-	return userclientadapter.New(client)
+	return userclientadapter.NewUserClientAdapter(client)
 }
 
 func TestAdapter_CreateUser_Success(t *testing.T) {
@@ -245,15 +244,9 @@ func TestAdapter_Subscribe_Success(t *testing.T) {
 
 	adapter := newAdapter(t, nc)
 
-	createdCh := make(chan ports.UserCreatedEvent, 1)
-	updatedCh := make(chan ports.UserUpdatedEvent, 1)
-	deletedCh := make(chan ports.UserDeletedEvent, 1)
+	eventCh := make(chan userclient.Event, 10)
 
-	sub, err := adapter.Subscribe(ports.EventHandlers{
-		OnCreated: func(e ports.UserCreatedEvent) { createdCh <- e },
-		OnUpdated: func(e ports.UserUpdatedEvent) { updatedCh <- e },
-		OnDeleted: func(e ports.UserDeletedEvent) { deletedCh <- e },
-	})
+	sub, err := adapter.Subscribe(eventCh)
 	if err != nil {
 		t.Fatalf("unexpected error subscribing: %v", err)
 	}
@@ -264,11 +257,9 @@ func TestAdapter_Subscribe_Success(t *testing.T) {
 		t.Fatalf("unexpected error unsubscribing: %v", err)
 	}
 
-	// Publish events and verify handlers are called
-	sub2, err := adapter.Subscribe(ports.EventHandlers{
-		OnCreated: func(e ports.UserCreatedEvent) { createdCh <- e },
-		OnDeleted: func(e ports.UserDeletedEvent) { deletedCh <- e },
-	})
+	// Publish events and verify they arrive on the channel
+	eventCh2 := make(chan userclient.Event, 10)
+	sub2, err := adapter.Subscribe(eventCh2)
 	if err != nil {
 		t.Fatalf("unexpected error on second subscribe: %v", err)
 	}
@@ -287,21 +278,38 @@ func TestAdapter_Subscribe_Success(t *testing.T) {
 		t.Fatalf("failed to publish deleted event: %v", err)
 	}
 
-	select {
-	case e := <-createdCh:
-		if e.User.Email != sampleUserDTO.Email {
-			t.Errorf("expected email %s, got %s", sampleUserDTO.Email, e.User.Email)
+	received := map[string]bool{"created": false, "deleted": false}
+	for i := 0; i < 2; i++ {
+		select {
+		case evt := <-eventCh2:
+			switch evt.Type {
+			case "created":
+				e, ok := evt.Payload.(userclient.UserCreatedEvent)
+				if !ok {
+					t.Fatal("expected UserCreatedEvent payload")
+				}
+				if e.User.Email != sampleUserDTO.Email {
+					t.Errorf("expected email %s, got %s", sampleUserDTO.Email, e.User.Email)
+				}
+				received["created"] = true
+			case "deleted":
+				e, ok := evt.Payload.(userclient.UserDeletedEvent)
+				if !ok {
+					t.Fatal("expected UserDeletedEvent payload")
+				}
+				if e.UserID != sampleUserDTO.UserID {
+					t.Errorf("expected userID %s, got %s", sampleUserDTO.UserID, e.UserID)
+				}
+				received["deleted"] = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for event")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for created event")
 	}
-
-	select {
-	case e := <-deletedCh:
-		if e.UserID != sampleUserDTO.UserID {
-			t.Errorf("expected userID %s, got %s", sampleUserDTO.UserID, e.UserID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for deleted event")
+	if !received["created"] {
+		t.Error("did not receive created event")
+	}
+	if !received["deleted"] {
+		t.Error("did not receive deleted event")
 	}
 }

@@ -49,3 +49,10 @@ UPDATE users
 SET deleted_at = NOW()
 WHERE user_id = $1
   AND deleted_at IS NULL;
+
+-- name: ListAllUsers :many
+SELECT * FROM users
+WHERE deleted_at IS NULL
+  AND (sqlc.narg('status')::VARCHAR IS NULL
+       OR status = sqlc.narg('status')::VARCHAR)
+ORDER BY created_at DESC;

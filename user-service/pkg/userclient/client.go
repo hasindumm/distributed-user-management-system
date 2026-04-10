@@ -33,7 +33,7 @@ type Client struct {
 	cacheFullyLoaded bool
 }
 
-func New(cfg Config, logger *slog.Logger) (*Client, error) {
+func NewUserClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	nc, err := nats.Connect(cfg.NATSURL)
 	if err != nil {
 		return nil, fmt.Errorf("userclient: failed to connect to NATS: %w", err)
@@ -66,87 +66,85 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 }
 
 func (c *Client) loadCache() {
-	ctx, cancel := context.WithTimeout(context.Background(), cacheStartupTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
 
-	offset := 0
-	total := 0
-
-	for {
-		req := ListUsersRequest{
-			Limit:  cacheStartupBatchSize,
-			Offset: int32(offset),
-		}
-		var resp ListUsersResponse
-		if err := c.request(ctx, SubjectListUsers, req, &resp); err != nil {
-			c.logger.Warn("userclient: cache startup load failed",
-				"offset", offset,
-				"loaded_so_far", total,
-				"error", err)
-			return
-		}
-		if resp.Error != nil {
-			c.logger.Warn("userclient: cache startup load returned error",
-				"offset", offset,
-				"error", resp.Error.Message)
-			return
-		}
-
-		for _, u := range resp.Users {
-			c.cache.set(u)
-		}
-		total += len(resp.Users)
-
-		c.logger.Info("userclient: cache startup batch loaded",
-			"batch_size", len(resp.Users),
-			"total_loaded", total,
-			"offset", offset)
-
-		if len(resp.Users) < int(cacheStartupBatchSize) {
-			c.cacheFullyLoaded = true
-			break
-		}
-
-		offset += int(cacheStartupBatchSize)
+	// use internal list.all subject — no pagination
+	// returns ALL users in one request
+	var resp ListAllUsersResponse
+	if err := c.request(ctx, SubjectListAllUsers, struct{}{}, &resp); err != nil {
+		c.logger.Warn("userclient: cache startup load failed", "error", err)
+		return
+	}
+	if resp.Error != nil {
+		c.logger.Warn("userclient: cache startup load returned error",
+			"error", resp.Error.Message)
+		return
 	}
 
+	for _, u := range resp.Users {
+		c.cache.set(u)
+	}
+
+	c.cacheFullyLoaded = true
 	c.logger.Info("userclient: cache loaded at startup",
-		"total_users", total,
-		"fully_loaded", c.cacheFullyLoaded)
+		"total_users", len(resp.Users))
 }
 
 func (c *Client) subscribeForCacheSync() {
-	sub, err := c.Subscribe(EventHandlers{
-		OnCreated: func(evt UserCreatedEvent) {
-			select {
-			case c.updateCh <- cacheUpdate{eventType: "created", user: &evt.User}:
-			default:
-				c.logger.Warn("userclient: cache update channel full, dropping created event",
-					"user_id", evt.User.UserID)
-			}
-		},
-		OnUpdated: func(evt UserUpdatedEvent) {
-			select {
-			case c.updateCh <- cacheUpdate{eventType: "updated", user: &evt.User}:
-			default:
-				c.logger.Warn("userclient: cache update channel full, dropping updated event",
-					"user_id", evt.User.UserID)
-			}
-		},
-		OnDeleted: func(evt UserDeletedEvent) {
-			select {
-			case c.updateCh <- cacheUpdate{eventType: "deleted", userID: evt.UserID}:
-			default:
-				c.logger.Warn("userclient: cache update channel full, dropping deleted event",
-					"user_id", evt.UserID)
-			}
-		},
-	})
+	// create event channel
+	eventCh := make(chan Event, cacheUpdateBufferSize)
+
+	sub, err := c.Subscribe(eventCh)
 	if err != nil {
-		c.logger.Warn("userclient: failed to subscribe for cache sync, cache may become stale", "error", err)
+		c.logger.Warn("userclient: failed to subscribe for cache sync, cache may become stale",
+			"error", err)
 		return
 	}
 	c.cacheSub = sub
+	// this goroutine decides what to do with each event
+	go func() {
+		for evt := range eventCh {
+			switch evt.Type {
+			case created:
+				e, ok := evt.Payload.(UserCreatedEvent)
+				if !ok {
+					c.logger.Error("userclient: unexpected payload type", "event_type", evt.Type)
+					continue
+				}
+				select {
+				case c.updateCh <- cacheUpdate{eventType: "created", user: &e.User}:
+				default:
+					c.logger.Warn("userclient: cache update channel full, dropping created event",
+						"user_id", e.User.UserID)
+				}
+			case updated:
+				e, ok := evt.Payload.(UserUpdatedEvent)
+				if !ok {
+					c.logger.Error("userclient: unexpected payload type", "event_type", evt.Type)
+					continue
+				}
+				select {
+				case c.updateCh <- cacheUpdate{eventType: "updated", user: &e.User}:
+				default:
+					c.logger.Warn("userclient: cache update channel full, dropping updated event",
+						"user_id", e.User.UserID)
+				}
+			case deleted:
+				e, ok := evt.Payload.(UserDeletedEvent)
+				if !ok {
+					c.logger.Error("userclient: unexpected payload type", "event_type", evt.Type)
+					continue
+				}
+				select {
+				case c.updateCh <- cacheUpdate{eventType: "deleted", userID: e.UserID}:
+				default:
+					c.logger.Warn("userclient: cache update channel full, dropping deleted event",
+						"user_id", e.UserID)
+				}
+			}
+		}
+	}()
 
 	if err := c.nc.Flush(); err != nil {
 		c.logger.Warn("userclient: failed to flush NATS connection after subscribing for cache sync",
@@ -161,7 +159,6 @@ func (c *Client) processCacheUpdates() {
 		select {
 		case update, ok := <-c.updateCh:
 			if !ok {
-				// channel was closed — drain complete
 				return
 			}
 			c.applyCacheUpdate(update)
@@ -182,7 +179,7 @@ func (c *Client) processCacheUpdates() {
 
 func (c *Client) applyCacheUpdate(update cacheUpdate) {
 	switch update.eventType {
-	case "created", "updated":
+	case created, updated:
 		if update.user == nil {
 			c.logger.Error("userclient: cache update has nil user", "event_type", update.eventType)
 			return
@@ -191,7 +188,7 @@ func (c *Client) applyCacheUpdate(update cacheUpdate) {
 		c.logger.Info("userclient: cache updated via event",
 			"event_type", update.eventType,
 			"user_id", update.user.UserID)
-	case "deleted":
+	case deleted:
 		c.cache.delete(update.userID)
 		c.logger.Info("userclient: cache entry removed via event",
 			"user_id", update.userID)
@@ -338,12 +335,6 @@ func (c *Client) DeleteUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-type EventHandlers struct {
-	OnCreated func(UserCreatedEvent)
-	OnUpdated func(UserUpdatedEvent)
-	OnDeleted func(UserDeletedEvent)
-}
-
 type Subscription struct {
 	subs   []*nats.Subscription
 	logger *slog.Logger
@@ -360,56 +351,65 @@ func (s *Subscription) Unsubscribe() error {
 	return nil
 }
 
-func (c *Client) Subscribe(handlers EventHandlers) (*Subscription, error) {
+func (c *Client) Subscribe(ch chan<- Event) (*Subscription, error) {
 	sub := &Subscription{logger: c.logger}
 
-	if handlers.OnCreated != nil {
-		s, err := c.nc.Subscribe(SubjectUserCreated, func(msg *nats.Msg) {
-			var evt UserCreatedEvent
-			if err := json.Unmarshal(msg.Data, &evt); err != nil {
-				c.logger.Error("userclient: failed to unmarshal created event", "error", err)
-				return
-			}
-			c.logger.Debug("userclient: received user created event", "user_id", evt.User.UserID)
-			handlers.OnCreated(evt)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserCreated, err)
+	s, err := c.nc.Subscribe(SubjectUserCreated, func(msg *nats.Msg) {
+		var evt UserCreatedEvent
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			c.logger.Error("userclient: failed to unmarshal created event", "error", err)
+			return
 		}
-		sub.subs = append(sub.subs, s)
+		c.logger.Debug("userclient: received user created event", "user_id", evt.User.UserID)
+		select {
+		case ch <- Event{Type: "created", Payload: evt}:
+		default:
+			c.logger.Warn("userclient: event channel full, dropping created event",
+				"user_id", evt.User.UserID)
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserCreated, err)
 	}
+	sub.subs = append(sub.subs, s)
 
-	if handlers.OnUpdated != nil {
-		s, err := c.nc.Subscribe(SubjectUserUpdated, func(msg *nats.Msg) {
-			var evt UserUpdatedEvent
-			if err := json.Unmarshal(msg.Data, &evt); err != nil {
-				c.logger.Error("userclient: failed to unmarshal updated event", "error", err)
-				return
-			}
-			c.logger.Debug("userclient: received user updated event", "user_id", evt.User.UserID)
-			handlers.OnUpdated(evt)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserUpdated, err)
+	s, err = c.nc.Subscribe(SubjectUserUpdated, func(msg *nats.Msg) {
+		var evt UserUpdatedEvent
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			c.logger.Error("userclient: failed to unmarshal updated event", "error", err)
+			return
 		}
-		sub.subs = append(sub.subs, s)
+		c.logger.Debug("userclient: received user updated event", "user_id", evt.User.UserID)
+		select {
+		case ch <- Event{Type: "updated", Payload: evt}:
+		default:
+			c.logger.Warn("userclient: event channel full, dropping updated event",
+				"user_id", evt.User.UserID)
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserUpdated, err)
 	}
+	sub.subs = append(sub.subs, s)
 
-	if handlers.OnDeleted != nil {
-		s, err := c.nc.Subscribe(SubjectUserDeleted, func(msg *nats.Msg) {
-			var evt UserDeletedEvent
-			if err := json.Unmarshal(msg.Data, &evt); err != nil {
-				c.logger.Error("userclient: failed to unmarshal deleted event", "error", err)
-				return
-			}
-			c.logger.Debug("userclient: received user deleted event", "user_id", evt.UserID)
-			handlers.OnDeleted(evt)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserDeleted, err)
+	s, err = c.nc.Subscribe(SubjectUserDeleted, func(msg *nats.Msg) {
+		var evt UserDeletedEvent
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			c.logger.Error("userclient: failed to unmarshal deleted event", "error", err)
+			return
 		}
-		sub.subs = append(sub.subs, s)
+		c.logger.Debug("userclient: received user deleted event", "user_id", evt.UserID)
+		select {
+		case ch <- Event{Type: "deleted", Payload: evt}:
+		default:
+			c.logger.Warn("userclient: event channel full, dropping deleted event",
+				"user_id", evt.UserID)
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("userclient: failed to subscribe to %s: %w", SubjectUserDeleted, err)
 	}
+	sub.subs = append(sub.subs, s)
 
 	c.logger.Info("userclient: subscribed to user events")
 	return sub, nil

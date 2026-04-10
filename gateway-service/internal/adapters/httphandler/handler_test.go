@@ -61,7 +61,7 @@ var sampleUserResponse = dto.UserResponse{
 
 func newRouter(svc ports.UserService) chi.Router {
 	r := chi.NewRouter()
-	h := httphandler.New(svc, noopLogger())
+	h := httphandler.NewHttpHandler(svc, noopLogger())
 	h.RegisterRoutes(r)
 	return r
 }

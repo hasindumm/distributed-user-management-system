@@ -94,6 +94,27 @@ func (r *PostgresUserRepository) List(ctx context.Context, status *domain.UserSt
 
 }
 
+func (r *PostgresUserRepository) ListAll(ctx context.Context, status *domain.UserStatus) ([]domain.User, error) {
+	var statusFilter sql.NullString
+	if status != nil {
+		statusFilter = sql.NullString{
+			String: string(*status),
+			Valid:  true,
+		}
+	}
+
+	result, err := r.queries.ListAllUsers(ctx, statusFilter)
+	if err != nil {
+		return []domain.User{}, err
+	}
+
+	users := make([]domain.User, len(result))
+	for i, u := range result {
+		users[i] = toDomainUser(u)
+	}
+	return users, nil
+}
+
 func (r *PostgresUserRepository) Update(ctx context.Context, user domain.User) (domain.User, error) {
 
 	args := db.UpdateUserParams{

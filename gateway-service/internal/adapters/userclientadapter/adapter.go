@@ -12,7 +12,7 @@ type Adapter struct {
 	client *userclient.Client
 }
 
-func New(client *userclient.Client) *Adapter {
+func NewUserClientAdapter(client *userclient.Client) *Adapter {
 	return &Adapter{client: client}
 }
 
@@ -84,24 +84,8 @@ func (a *Adapter) DeleteUser(ctx context.Context, id string) error {
 	return a.client.DeleteUser(ctx, id)
 }
 
-func (a *Adapter) Subscribe(handlers ports.EventHandlers) (ports.Subscription, error) {
-	return a.client.Subscribe(userclient.EventHandlers{
-		OnCreated: func(evt userclient.UserCreatedEvent) {
-			if handlers.OnCreated != nil {
-				handlers.OnCreated(ports.UserCreatedEvent{User: toUserResponse(evt.User)})
-			}
-		},
-		OnUpdated: func(evt userclient.UserUpdatedEvent) {
-			if handlers.OnUpdated != nil {
-				handlers.OnUpdated(ports.UserUpdatedEvent{User: toUserResponse(evt.User)})
-			}
-		},
-		OnDeleted: func(evt userclient.UserDeletedEvent) {
-			if handlers.OnDeleted != nil {
-				handlers.OnDeleted(ports.UserDeletedEvent{UserID: evt.UserID})
-			}
-		},
-	})
+func (a *Adapter) Subscribe(ch chan<- userclient.Event) (ports.Subscription, error) {
+	return a.client.Subscribe(ch)
 }
 
 func toUserResponse(u userclient.UserDTO) dto.UserResponse {

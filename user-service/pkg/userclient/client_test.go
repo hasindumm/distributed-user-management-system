@@ -69,13 +69,13 @@ func TestNew_ValidURL(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
 
-	client, err := userclient.New(userclient.Config{NATSURL: url}, testLogger)
+	client, err := userclient.NewUserClient(userclient.Config{NATSURL: url}, testLogger)
 	require.NoError(t, err)
 	defer client.Close()
 }
 
 func TestNew_InvalidURL(t *testing.T) {
-	_, err := userclient.New(userclient.Config{NATSURL: "nats://127.0.0.1:1"}, testLogger)
+	_, err := userclient.NewUserClient(userclient.Config{NATSURL: "nats://127.0.0.1:1"}, testLogger)
 	require.Error(t, err)
 }
 
@@ -83,7 +83,7 @@ func TestNew_DefaultTimeout(t *testing.T) {
 	url, shutdown := startServer(t)
 	defer shutdown()
 
-	client, err := userclient.New(userclient.Config{NATSURL: url, Timeout: 0}, testLogger)
+	client, err := userclient.NewUserClient(userclient.Config{NATSURL: url, Timeout: 0}, testLogger)
 	require.NoError(t, err)
 	defer client.Close()
 }

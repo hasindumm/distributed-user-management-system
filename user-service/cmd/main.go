@@ -43,6 +43,7 @@ func main() {
 	slog.Info("service starting", "service", "user-service")
 
 	// DB
+	// extract to a sepereate fucn or file
 	database, err := sql.Open("postgres", cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("error connecting to the database", "error", err)
@@ -80,7 +81,7 @@ func main() {
 
 	// Wire up layers
 	repo := postgresadaptor.NewPostgresRepository(database)
-	svc := service.New(repo, logger)
+	svc := service.NewService(repo, logger)
 	handler := natsadaptor.NewHandler(svc, nc, logger)
 
 	if err := handler.Subscribe(); err != nil {
